@@ -112,6 +112,8 @@ python tesla_setup.py telemetry           # signs config with the virtual key, p
 python tesla_setup.py telemetry-status    # synced=True once each car has adopted it (may take a drive/wake)
 ```
 
+Currently deployed on the Windows PC (see Plan.md "Status" for the live state).
+
 Signals configured (edit `telemetry_fields()` in `tesla_setup.py`):
 
 | Field | Interval | Notes |

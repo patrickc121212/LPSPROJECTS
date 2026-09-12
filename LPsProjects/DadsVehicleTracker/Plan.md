@@ -45,16 +45,44 @@
 - **Tesla Fleet API pricing** (new since plan was drafted): 500 data polls / $1, 50 wakes / $1, 150k telemetry signals / $1, $10/mo credit. Drove the decision to stream rather than poll.
 - Telemetry receiver needs a public 443 with a real cert and must terminate mTLS itself — `telemetry.dowdsgarage.com` must be a DNS-only (grey-cloud) Cloudflare record; home IP changes need DDNS.
 
-## Status (2026-09-12)
-- All five core features implemented and covered by `tests/` (80 tests; `pytest`).
-- Verified end-to-end in simulator mode: each car's scripted round trip fires its owner's door exactly once per return.
-- **Tesla onboarding complete**: partner `dowdsgarage.com` registered (na), OAuth tokens obtained (auto-refresh), VINs mapped (Cybertruck→Dad, Model 3→LP, Model Y→Mom), virtual key paired on all three cars (fw 2026.26.6, telemetry 1.3.0). One live `vehicle_data` call confirmed the real-API path works.
-- Fleet Telemetry receiver stack + signed-config pusher written and unit-tested; **not yet deployed** (needs home-server steps in `telemetry/README.md`).
-- Google Routine webhook and Twilio paths run in dry-run mode until their env vars are set.
+## Status (as of 2026-09-12, end of day)
 
-## Next steps
-1. **Deploy the telemetry receiver** on the home server per `telemetry/README.md`: grey-cloud DNS record, router 443 forward, Cloudflare API token, `certbot`, `docker compose up`, then `python tesla_setup.py telemetry` and `VEHICLE_SOURCE=telemetry`.
-2. Set real garage lat/lon + radius per door in `.env`; check the circles on the map.
-3. IFTTT (or Apps Script) webhook → `GOOGLE_ROUTINE_WEBHOOK_URL`; confirm a manual Open from `/doors` moves the Shelly.
-4. Twilio number + `/sms` webhook URL; send a test message and wait out `SMS_FALLBACK_AFTER_S`.
-5. Confirm MagicDNS resolves in the Tesla in-car browser; else Cloudflare Tunnel.
+### Working, live, on real cars
+- **Fleet Telemetry is deployed and streaming.** Receiver (`tesla/fleet-telemetry` v0.9.4) + Mosquitto run in Docker Desktop on the Windows PC (`192.168.1.40`, Wi-Fi). Public `telemetry.dowdsgarage.com` (Cloudflare, **DNS-only/grey cloud**) → router forwards TCP 443 → PC. Let's Encrypt cert via Cloudflare DNS-01, valid to **2026-12-11**; renewal is `docker compose --profile cert run --rm certbot-renew` (not yet scheduled — see Next steps).
+- Signed telemetry config pushed to all 3 VINs (`updated_vehicles: 3`). **AeroTitan (Cybertruck) connected within a minute and streams** Location / Speed / Gear / Battery / charge state. Model 3 and Rosie showed `synced=False` (asleep) — they adopt the config on next wake, no action needed. Check: `python tesla_setup.py telemetry-status`.
+- Tracker app runs in `VEHICLE_SOURCE=telemetry` mode and shows the truck's real position. Geofence centres for all three doors = the truck's parked fix (one point; 75 m radius covers the three bays).
+- **Door ownership follows the physical bays**: Garage 1 = Mom/Rosie, Garage 2 = Dad/AeroTitan (middle), Garage 3 = LP/Model 3. Overridable via `GARAGE{N}_OWNER`.
+- **Remote access via Tailscale.** PC is node `tracker` (100.81.24.40). Tailscale Serve + **Funnel on**: the app is public at **https://tracker.taild11993.ts.net** (Let's Encrypt cert, Tailscale edge → 127.0.0.1:5000). HTTPS certs enabled in the tailnet admin; Funnel enabled via `nodeAttrs` in the ACL file. Patrick's S24 Ultra is on the tailnet. `APP_PASSWORD` changed from the default (16 chars).
+- Tesla onboarding complete: partner `dowdsgarage.com` registered (na, pay-as-you-go), OAuth tokens in `data/tesla_tokens.json` (auto-refresh), virtual key paired on all three cars (fw 2026.26.6, telemetry 1.3.0).
+- 81 tests pass (`pytest`, ~15 s, no network).
+
+### Still dry-run / not wired
+- **Garage doors don't actually move yet** — `GOOGLE_ROUTINE_WEBHOOK_URL` is empty, so the geofence/door buttons log `[dry-run] would fire routine: Open Garage N`.
+- **No SMS/push** — `TWILIO_*` and `PHONE_*` are empty. Decision pending: replace Twilio with **ntfy** push (free; see Open decisions).
+- **Nothing survives a reboot.** The Flask app is a foreground process started from the dev session; Docker containers restart on their own but the app and `tailscale serve` config need the PC awake. Windows sleep = map goes stale and cars can't reach the receiver.
+- **Windows Firewall rule** for port 5000 restricted to Tailscale (100.64.0.0/10) was attempted but needs a UAC click; currently relying on whatever Python's existing firewall allowance is. Phone-over-tailnet access not yet confirmed (laptop test was inconclusive — laptop connectivity).
+- **In-car browser test not yet done.** Funnel URL is reachable worldwide (verified from 3 external nodes); the car just needs to try `https://tracker.taild11993.ts.net`.
+- Public URL is already being scanned by bots (`GET /.env` → 404 within 30 min of Funnel on). Flask login is the only gate today.
+
+### Open decisions (Patrick)
+1. **Push channel**: ntfy (free, phone app, recommended) vs Twilio SMS (~$1.15/mo + per-text; US numbers need 10DLC or toll-free). Leaning ntfy; Twilio stays optional.
+2. **Custom domain**: (A) `tracker.dowdsgarage.com` via Cloudflare Tunnel, leaving the root Pages site (which hosts the Tesla public key) untouched — recommended; or (B) bare `dowdsgarage.com`, which requires Flask to also serve `/.well-known/appspecific/com.tesla.3p.public-key.pem`. Either way, put **Cloudflare Access** (free ≤50 users) in front. Needs a tunnel token from one.dash.cloudflare.com → Networks → Tunnels.
+3. **Long-term host**: the Windows PC is a stopgap; a Pi 5 / mini-PC would run the Docker stack + app 24/7. Runbook in `telemetry/README.md` is host-agnostic.
+
+## Next steps (suggested order)
+1. **Car browser test**: open `https://tracker.taild11993.ts.net` in a Tesla, sign in, confirm the map renders, touch pan/zoom, marker moves. Report exact error text if it fails.
+2. **Survive reboots**: register `app.py` as a Windows scheduled task (at logon, restart on failure); set power plan to never sleep when plugged in; confirm `tailscale serve/funnel` config persists (it should — it's stored by the daemon). Schedule weekly `certbot-renew` + `docker compose restart fleet-telemetry`.
+3. **Firewall rule** (needs someone at the PC to click Yes on UAC): allow TCP 5000 from 100.64.0.0/10 only.
+4. **Google Home webhook** → real door control: IFTTT "Webhooks → Google Assistant (V2) trigger routine" or Apps Script; set `GOOGLE_ROUTINE_WEBHOOK_URL` (+ token); confirm a manual Open from `/doors` moves the Shelly; then let the geofence fire for real. Consider a manual-close timeout.
+5. **Push notifications**: implement ntfy sender alongside Twilio in `sms.py`; per-driver random topics in `.env`; family installs the ntfy app.
+6. **Custom domain + Access** per decision 2.
+7. **DDNS** for `telemetry.dowdsgarage.com` — home IP is `68.184.61.239` today; if the ISP rotates it, the cars lose the receiver. Cloudflare token already has DNS edit rights; a `cloudflare-ddns` container in `telemetry/docker-compose.yml` would cover it.
+8. Invite Mom and LP to the tailnet (or rely on the Funnel URL + Access).
+
+## Where things live
+- Project: `LPSPROJECTS/LPsProjects/DadsVehicleTracker` (`main`, pushed through `cd4abb5`).
+- Secrets (all gitignored): `.env` (Tesla client id/secret, VINs, APP_PASSWORD, geofence coords), `data/tesla_tokens.json`, `data/tesla_private_key.pem`, `telemetry/cloudflare.ini`, `telemetry/certs/`, `telemetry/.env`.
+- Tesla developer app: client id `65f81dac-…`, Allowed Origin `dowdsgarage.com`, redirect `https://dowdsgarage.com/callback` (a 404 page — fine). Public key hosted on Cloudflare Pages.
+- Cloudflare zone `dowdsgarage.com` id `398ef2d3…`; API token (Edit zone DNS) in `telemetry/cloudflare.ini`.
+- Tailscale: tailnet `taild11993.ts.net`, account patrickc121212@gmail.com.
+- Ops CLI: `python tesla_setup.py {check|status|telemetry-status|telemetry|telemetry-delete|refresh}`.
