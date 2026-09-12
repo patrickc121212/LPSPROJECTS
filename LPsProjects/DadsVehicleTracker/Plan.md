@@ -59,7 +59,7 @@
 ### Still dry-run / not wired
 - **Garage doors don't actually move yet** — `GOOGLE_ROUTINE_WEBHOOK_URL` is empty, so the geofence/door buttons log `[dry-run] would fire routine: Open Garage N`.
 - **No SMS/push** — `TWILIO_*` and `PHONE_*` are empty. Decision pending: replace Twilio with **ntfy** push (free; see Open decisions).
-- **Nothing survives a reboot.** The Flask app is a foreground process started from the dev session; Docker containers restart on their own but the app and `tailscale serve` config need the PC awake. Windows sleep = map goes stale and cars can't reach the receiver.
+- ~~Nothing survives a reboot~~ **DONE 2026-09-12**: app runs under Scheduled Task "Dads Vehicle Tracker" (at logon +30 s, hidden, self-supervising launcher `run_tracker.cmd`, log `data/app.log`; crash-tested: back in 3 s). PC set to never sleep/hibernate on AC. Tailscale is an auto-start service; containers are `unless-stopped`. **Remaining caveat:** it is an at-logon task, so after a reboot someone must sign in to Windows (or enable auto-login) — and verify Docker Desktop's "Start when you sign in" is ticked.
 - **Windows Firewall rule** for port 5000 restricted to Tailscale (100.64.0.0/10) was attempted but needs a UAC click; currently relying on whatever Python's existing firewall allowance is. Phone-over-tailnet access not yet confirmed (laptop test was inconclusive — laptop connectivity).
 - ~~In-car browser test~~ **DONE 2026-09-12: tested in two cars, "everything is working great"** — the Tesla browser handles the Funnel URL, cert, login and Leaflet map. Plan's biggest open risk is closed.
 - **Geofence validated on real data**: Rosie returned home twice (10:05, 14:26); each fired exactly one `Open Garage 1` (dry-run), no re-fires while parked.
@@ -72,7 +72,7 @@
 
 ## Next steps (suggested order)
 1. ~~Car browser test~~ done.
-2. **Survive reboots**: register `app.py` as a Windows scheduled task (at logon, restart on failure); set power plan to never sleep when plugged in; confirm `tailscale serve/funnel` config persists (it should — it's stored by the daemon). Schedule weekly `certbot-renew` + `docker compose restart fleet-telemetry`.
+2. ~~Survive reboots~~ done, except: (a) confirm Docker Desktop → Settings → General → "Start Docker Desktop when you sign in" is ticked; (b) decide on Windows auto-login or accept signing in after reboots; (c) **schedule weekly `certbot-renew` + `docker compose restart fleet-telemetry`** (cert expires 2026-12-11) — not yet done.
 3. **Firewall rule** (needs someone at the PC to click Yes on UAC): allow TCP 5000 from 100.64.0.0/10 only.
 4. **Google Home webhook** → real door control: IFTTT "Webhooks → Google Assistant (V2) trigger routine" or Apps Script; set `GOOGLE_ROUTINE_WEBHOOK_URL` (+ token); confirm a manual Open from `/doors` moves the Shelly; then let the geofence fire for real. Consider a manual-close timeout.
 5. **Push notifications**: implement ntfy sender alongside Twilio in `sms.py`; per-driver random topics in `.env`; family installs the ntfy app.

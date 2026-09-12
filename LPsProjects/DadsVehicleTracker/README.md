@@ -50,6 +50,23 @@ vehicle drives a scripted round trip from its owner's garage — park,
 every return without real cars or real Shellys. Set
 `TESLA_POLL_INTERVAL_S=2` in `.env` for a faster demo loop.
 
+## Running it 24/7 (Windows host)
+
+`run_tracker.cmd` supervises the app (restarts it 10 s after any exit) and
+logs to `data/app.log`. It's registered as the Scheduled Task
+**"Dads Vehicle Tracker"** — runs hidden at logon (+30 s so Docker is up),
+no time limit. Manage it in Task Scheduler or:
+
+```powershell
+schtasks /Run  /TN "Dads Vehicle Tracker"    # start now
+schtasks /End  /TN "Dads Vehicle Tracker"    # stop (kill python.exe too if it lingers)
+Get-Content datapp.log -Tail 50 -Wait      # follow the log
+```
+
+Requirements for it to stay reachable: PC set to never sleep on AC
+(`powercfg /change standby-timeout-ac 0`), Docker Desktop set to start at
+sign-in, and the user logged in (the task is an at-logon task).
+
 ## Tests
 
 ```bash
