@@ -90,7 +90,15 @@ GARAGE_DOORS_BY_KEY = {g.key: g for g in GARAGE_DOORS}
 
 # --- Behavior knobs ---------------------------------------------------------
 
-# Tesla Fleet API poll cadence (seconds). Keep conservative; back off on 429.
+# Where vehicle positions come from:
+#   sim        built-in simulator (default when nothing is configured)
+#   telemetry  Fleet Telemetry push via MQTT (telemetry_worker) — production
+#   poll       Fleet API vehicle_data polling (tesla_poller) — costly fallback
+_default_source = "sim" if os.getenv("TRACKER_SIMULATE", "1") == "1" else "poll"
+VEHICLE_SOURCE = os.getenv("VEHICLE_SOURCE", _default_source).lower()
+
+# Tesla Fleet API poll cadence (seconds) — only used when VEHICLE_SOURCE=poll.
+# Every call is billed (500/$1), so 300s is the floor we recommend.
 TESLA_POLL_INTERVAL_S = int(os.getenv("TESLA_POLL_INTERVAL_S", "30"))
 # Fleet API region: "na" | "eu" | "cn".
 TESLA_REGION = os.getenv("TESLA_REGION", "na")

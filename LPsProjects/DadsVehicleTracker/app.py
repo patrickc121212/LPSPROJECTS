@@ -45,6 +45,7 @@ import config
 import geofence_worker
 import models
 import sms
+import telemetry_worker
 import tesla_poller
 from eventbus import bus
 
@@ -68,7 +69,11 @@ def create_app(start_workers: bool = True) -> Flask:
 
     models.init_db()
     if start_workers:
-        tesla_poller.start_background()
+        log.info("Vehicle source: %s", config.VEHICLE_SOURCE)
+        if config.VEHICLE_SOURCE == "telemetry":
+            telemetry_worker.start_background()
+        else:
+            tesla_poller.start_background()
         geofence_worker.start_background()
         sms.start_background()
 

@@ -1,0 +1,35 @@
+{
+  "host": "0.0.0.0",
+  "port": 443,
+  "status_port": 8080,
+  "log_level": "info",
+  "json_log_enable": true,
+  "namespace": "tesla_telemetry",
+  "reliable_ack_sources": { "V": "mqtt" },
+  "mqtt": {
+    "broker": "mosquitto:1883",
+    "client_id": "fleet-telemetry",
+    "topic_base": "telemetry",
+    "qos": 1,
+    "retained": true,
+    "connect_timeout_ms": 30000,
+    "publish_timeout_ms": 2500,
+    "connect_retry_interval_ms": 10000,
+    "keep_alive_seconds": 30
+  },
+  "records": {
+    "V": ["mqtt"],
+    "alerts": ["mqtt"],
+    "errors": ["mqtt"],
+    "connectivity": ["mqtt"]
+  },
+  "rate_limit": {
+    "enabled": true,
+    "message_interval_time": 30,
+    "message_limit": 1000
+  },
+  "tls": {
+    "server_cert": "/etc/certs/fullchain.pem",
+    "server_key": "/etc/certs/privkey.pem"
+  }
+}

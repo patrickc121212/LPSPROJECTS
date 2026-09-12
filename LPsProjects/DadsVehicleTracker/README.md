@@ -15,7 +15,8 @@ Built per [Plan.md](Plan.md). Vehicles:
 
 ## Features
 
-1. **Live map** — Leaflet + OpenStreetMap, all 3 vehicles updated via SSE.
+1. **Live map** — Leaflet + OpenStreetMap, all 3 vehicles updated via SSE,
+   fed by Fleet Telemetry push (sub-second from the car).
 2. **Per-vehicle messaging** — compose to one driver; in-app inbox is the
    source of truth, Twilio SMS is a fallback push if the recipient hasn't
    checked in for `SMS_FALLBACK_AFTER_S` seconds.
@@ -52,7 +53,7 @@ every return without real cars or real Shellys. Set
 ## Tests
 
 ```bash
-pytest            # 61 tests, ~15 s, no network
+pytest            # 80 tests, ~15 s, no network
 ```
 
 The suite runs against a temp SQLite file with the background workers
@@ -60,18 +61,52 @@ disabled. Tesla, Twilio and the Google webhook are faked.
 
 ## Wiring up real services
 
-### Tesla Fleet API
-1. Create a Tesla developer account at https://developer.tesla.com.
-2. Register a partner application and get a `client_id` + `client_secret`.
-3. Pair each VIN via the Fleet API OAuth flow. Put the resulting bearer
-   token in `TESLA_ACCESS_TOKEN` and the VINs in `TESLA_VIN_DAD` /
-   `TESLA_VIN_LP` / `TESLA_VIN_MOM`. Set `TESLA_REGION` (`na`/`eu`/`cn`).
-4. Set `TRACKER_SIMULATE=0`. The poller switches to the real Fleet API
-   client automatically. On a 429 it backs off ×4 per hit (capped at 16×
-   the poll interval); other errors back off ×2.
+### Tesla Fleet API — onboarding (done once, via `tesla_setup.py`)
 
-The real-API path has been written against `tesla-fleet-api` 1.5 but has
-not yet been run against a live token — watch the log on first start.
+Tesla's Fleet API is pay-per-use (500 `vehicle_data` polls / $1, 150k
+telemetry signals / $1, $10/month credit). Polling three cars every 30 s
+would be ~$500/month, so production uses **Fleet Telemetry** (the cars push
+to our server) and polling is only a fallback.
+
+```bash
+python tesla_setup.py check       # public key hosted? partner registered? tokens?
+python tesla_setup.py register    # one-time: register TESLA_DOMAIN with Tesla
+python tesla_setup.py login       # prints a sign-in URL for the account that owns the cars
+python tesla_setup.py exchange "<redirected url>"   # -> data/tesla_tokens.json
+python tesla_setup.py vehicles    # VINs -> .env
+python tesla_setup.py pair        # virtual-key link to open on each owner's phone
+python tesla_setup.py status      # key paired? firmware / telemetry version
+```
+
+Needs `TESLA_CLIENT_ID` / `TESLA_CLIENT_SECRET` (developer.tesla.com app),
+the app's *Allowed Origin* domain hosting
+`/.well-known/appspecific/com.tesla.3p.public-key.pem`, and the matching
+P-256 private key at `TESLA_PRIVATE_KEY`. Tokens refresh automatically
+(refresh tokens are single-use and rotate; the file is rewritten each time).
+
+### Fleet Telemetry (production vehicle source)
+
+See **[telemetry/README.md](telemetry/README.md)** — Docker Compose with
+Tesla's `fleet-telemetry` receiver, Mosquitto, and a Let's Encrypt cert via
+Cloudflare DNS-01. Then:
+
+```bash
+python tesla_setup.py telemetry          # sign + push the signal config to the cars
+python tesla_setup.py telemetry-status   # synced?
+```
+
+and set `VEHICLE_SOURCE=telemetry` in `.env`. `telemetry_worker.py` folds
+the per-field MQTT messages into `vehicle_state` and pushes SSE.
+
+The config is signed with your virtual key using Tesla's Schnorr-P256 JWT
+scheme (`tesla_jws.py`, verified against Tesla's own test vectors), so no
+`tesla-http-proxy` is required.
+
+### Polling fallback (`VEHICLE_SOURCE=poll`)
+
+Uses the same token file. On a 429 the poller backs off ×4 per hit (capped
+at 16× the interval); other errors ×2. Keep `TESLA_POLL_INTERVAL_S` ≥ 300 —
+every call is billed and polling keeps the cars awake.
 
 ### Google Assistant Routines (for Shelly)
 We do NOT call the Shelly API directly. The flow is:
@@ -137,7 +172,11 @@ DadsVehicleTracker/
 ├── config.py           Vehicles, doors, geofences, owner model
 ├── models.py           SQLite schema + helpers
 ├── eventbus.py         In-process pub/sub for SSE
-├── tesla_poller.py     Tesla Fleet API client + simulator
+├── tesla_poller.py     Simulator + Fleet API polling fallback
+├── telemetry_worker.py Fleet Telemetry (MQTT) consumer — production source
+├── tesla_setup.py      One-time onboarding CLI (register / login / pair / telemetry)
+├── tesla_jws.py        Tesla SS256 (Schnorr-P256) JWT signer for telemetry configs
+├── telemetry/          docker-compose: fleet-telemetry + mosquitto + certbot, runbook
 ├── geofence_worker.py  Haversine + Google Routine trigger
 ├── sms.py              Twilio send + inbound + fallback sweeper
 ├── templates/          Jinja2 templates

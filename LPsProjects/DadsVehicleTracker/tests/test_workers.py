@@ -186,7 +186,7 @@ def test_fetch_real_maps_fleet_response(monkeypatch):
     out = asyncio.run(tp._fetch_real_async("tok", "na"))
     assert out[0]["vehicle_key"] == "dad"
     assert out[0]["latitude"] == 1.5 and out[0]["battery_pct"] == 77
-    assert abs(out[0]["speed_mph"] - 62.1371) < 0.01
+    assert out[0]["speed_mph"] == 100.0  # Fleet API speed is already mph
     assert out[0]["online"] is True
     assert out[1] == {"vehicle_key": "lp", "online": False}
     assert len(out) == 2

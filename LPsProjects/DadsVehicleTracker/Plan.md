@@ -23,7 +23,7 @@
 
 ## Architecture (high level)
 - Flask app on home server, bound to Tailscale interface.
-- Background worker: Tesla Fleet API poller (every ~30s) → updates vehicle state in SQLite.
+- Vehicle source: **Fleet Telemetry** — cars push Location/Speed/Battery over mTLS to a `fleet-telemetry` receiver on the home server → MQTT → `telemetry_worker` → SQLite. (Polling `vehicle_data` every 30 s would cost ~$500/month at Tesla's 2025+ pricing; telemetry is ~$0 under the $10 credit. Poller kept as a slow fallback.)
 - Geofence worker: computes haversine; fires the door's open routine on the outside→inside transition only (edge-triggered, plus a debounce against GPS jitter at the fence line). A car parked at home never re-fires.
 - SSE endpoint streams vehicle position + door state changes to the browser.
 - Shelly status mirrored from Google Home Graph (query only); we do NOT talk to Shelly directly.
@@ -40,16 +40,19 @@
 - Tailscale on the Tesla in-car browser: Teslas run a stripped Chromium; we may need to confirm MagicDNS resolves and the in-car browser allows the Tailscale cert. Fallback: expose via Cloudflare Tunnel from the same LAN host.
 - Shelly Cloud skill → Google Home round-trip latency (~1–3 s). Acceptable for manual; auto-open should debounce.
 - Tesla Fleet API rate limits — keep polling conservative; back off on 429. *(Implemented: poller backs off ×4 per 429, ×2 per other error, capped at 16× the poll interval.)*
+- **Tesla Fleet API pricing** (new since plan was drafted): 500 data polls / $1, 50 wakes / $1, 150k telemetry signals / $1, $10/mo credit. Drove the decision to stream rather than poll.
+- Telemetry receiver needs a public 443 with a real cert and must terminate mTLS itself — `telemetry.dowdsgarage.com` must be a DNS-only (grey-cloud) Cloudflare record; home IP changes need DDNS.
 
 ## Status (2026-09-12)
-- All five core features implemented and covered by `tests/` (61 tests; `pytest`).
+- All five core features implemented and covered by `tests/` (80 tests; `pytest`).
 - Verified end-to-end in simulator mode: each car's scripted round trip fires its owner's door exactly once per return.
-- Real Tesla Fleet API path is written against `tesla-fleet-api` 1.5 (async, `vehicle_data` with `location_data` endpoint) but **not yet exercised against a real token** — do that first when wiring up real cars.
+- **Tesla onboarding complete**: partner `dowdsgarage.com` registered (na), OAuth tokens obtained (auto-refresh), VINs mapped (Cybertruck→Dad, Model 3→LP, Model Y→Mom), virtual key paired on all three cars (fw 2026.26.6, telemetry 1.3.0). One live `vehicle_data` call confirmed the real-API path works.
+- Fleet Telemetry receiver stack + signed-config pusher written and unit-tested; **not yet deployed** (needs home-server steps in `telemetry/README.md`).
 - Google Routine webhook and Twilio paths run in dry-run mode until their env vars are set.
 
-## Next steps (before first real use)
-1. Set real garage lat/lon + radius per door in `.env`; check the circles on the map.
-2. Tesla developer app → token + VINs → `TRACKER_SIMULATE=0`; watch the poller log for 429s.
+## Next steps
+1. **Deploy the telemetry receiver** on the home server per `telemetry/README.md`: grey-cloud DNS record, router 443 forward, Cloudflare API token, `certbot`, `docker compose up`, then `python tesla_setup.py telemetry` and `VEHICLE_SOURCE=telemetry`.
+2. Set real garage lat/lon + radius per door in `.env`; check the circles on the map.
 3. IFTTT (or Apps Script) webhook → `GOOGLE_ROUTINE_WEBHOOK_URL`; confirm a manual Open from `/doors` moves the Shelly.
 4. Twilio number + `/sms` webhook URL; send a test message and wait out `SMS_FALLBACK_AFTER_S`.
 5. Confirm MagicDNS resolves in the Tesla in-car browser; else Cloudflare Tunnel.

@@ -27,9 +27,9 @@ from eventbus import bus
 
 log = logging.getLogger("tesla_poller")
 
-# Toggle the simulator off by setting TRACKER_SIMULATE=0 AND providing a
-# real TESLA_ACCESS_TOKEN. Otherwise we simulate.
-SIMULATE = os.getenv("TRACKER_SIMULATE", "1" if not os.getenv("TESLA_ACCESS_TOKEN") else "0") == "1"
+# Simulate unless VEHICLE_SOURCE=poll (config.py derives the default from
+# TRACKER_SIMULATE for backwards compatibility).
+SIMULATE = config.VEHICLE_SOURCE != "poll"
 
 # Simulator: each vehicle runs a scripted round trip from its owner's
 # garage — park, drive ~600 m out, park, drive back, park — so the map
@@ -138,43 +138,66 @@ _ENDPOINTS = ["drive_state", "charge_state", "location_data"]
 async def _fetch_real_async(token: str, region: str) -> list[dict[str, Any]]:
     import aiohttp
     from tesla_fleet_api import TeslaFleetApi
+    async with aiohttp.ClientSession() as session:
+        api = TeslaFleetApi(session, access_token=token, region=region)
+        return await _fetch_with(api)
+
+
+async def _fetch_with(api) -> list[dict[str, Any]]:
+    """Fetch every paired vehicle through an already-authenticated client."""
     from tesla_fleet_api.exceptions import RateLimited, TeslaFleetError
 
     out: list[dict[str, Any]] = []
-    async with aiohttp.ClientSession() as session:
-        api = TeslaFleetApi(session, access_token=token, region=region)
-        for v in config.VEHICLES:
-            if not v.tesla_vin:
-                continue
-            try:
-                resp = await api.vehicles.createFleet(v.tesla_vin).vehicle_data(_ENDPOINTS)
-                data = resp.get("response") or {}
-                drive = data.get("drive_state") or {}
-                charge = data.get("charge_state") or {}
-                speed_kph = drive.get("speed")
-                out.append({
-                    "vehicle_key": v.key,
-                    "latitude": drive.get("latitude"),
-                    "longitude": drive.get("longitude"),
-                    "speed_mph": None if speed_kph is None else speed_kph * 0.621371,
-                    "battery_pct": charge.get("battery_level"),
-                    "online": data.get("state") == "online",
-                })
-            except RateLimited as exc:
-                # Stop hitting the API this cycle; the loop backs off.
-                raise RateLimitedError(str(exc)) from exc
-            except TeslaFleetError as exc:
-                # Asleep / offline vehicles raise here; mark offline and move on.
-                log.warning("Tesla API error for %s: %s", v.key, exc)
-                out.append({"vehicle_key": v.key, "online": False})
+    for v in config.VEHICLES:
+        if not v.tesla_vin:
+            continue
+        try:
+            resp = await api.vehicles.createFleet(v.tesla_vin).vehicle_data(_ENDPOINTS)
+            data = resp.get("response") or {}
+            drive = data.get("drive_state") or {}
+            charge = data.get("charge_state") or {}
+            # drive_state.speed is already mph (null when parked).
+            speed = drive.get("speed")
+            out.append({
+                "vehicle_key": v.key,
+                "latitude": drive.get("latitude"),
+                "longitude": drive.get("longitude"),
+                "speed_mph": None if speed is None else float(speed),
+                "battery_pct": charge.get("battery_level"),
+                "online": data.get("state") == "online",
+            })
+        except RateLimited as exc:
+            # Stop hitting the API this cycle; the loop backs off.
+            raise RateLimitedError(str(exc)) from exc
+        except TeslaFleetError as exc:
+            # Asleep / offline vehicles raise here; mark offline and move on.
+            log.warning("Tesla API error for %s: %s", v.key, exc)
+            out.append({"vehicle_key": v.key, "online": False})
     return out
+
+
+async def _fetch_with_refresh() -> list[dict[str, Any]]:
+    """Authenticate from data/tesla_tokens.json (written by tesla_setup.py
+    login), refreshing — and persisting the rotated refresh token — when the
+    access token is within a minute of expiry."""
+    import aiohttp
+    import tesla_setup as ts
+
+    async with aiohttp.ClientSession() as session:
+        api = await ts._user_api(session)
+        return await _fetch_with(api)
 
 
 def _fetch_real() -> list[dict[str, Any]]:
     """Real Tesla Fleet API call. The SDK is asyncio-based, so we spin a
-    private event loop for each poll; fine at a 30s cadence."""
+    private event loop for each poll; fine at a slow cadence. Prefers the
+    refresh-token file; falls back to a static TESLA_ACCESS_TOKEN."""
     import asyncio
-    token = os.environ["TESLA_ACCESS_TOKEN"]
+    if os.path.exists(os.getenv("TESLA_TOKENS_PATH", "data/tesla_tokens.json")):
+        return asyncio.run(_fetch_with_refresh())
+    token = os.environ.get("TESLA_ACCESS_TOKEN", "")
+    if not token:
+        raise RuntimeError("No data/tesla_tokens.json and no TESLA_ACCESS_TOKEN; run tesla_setup.py login")
     return asyncio.run(_fetch_real_async(token, config.TESLA_REGION))
 
 
@@ -208,10 +231,8 @@ def _loop() -> None:
         _init_sim()
         log.info("Tesla poller running in SIMULATOR mode (set TRACKER_SIMULATE=0 to disable).")
     else:
-        if not os.getenv("TESLA_ACCESS_TOKEN"):
-            log.error("TRACKER_SIMULATE=0 but TESLA_ACCESS_TOKEN is empty; poller idle.")
-            return
-        log.info("Tesla poller running against the real Fleet API (region=%s).", config.TESLA_REGION)
+        log.info("Tesla poller running against the real Fleet API (region=%s, every %ss — billed per call).",
+                 config.TESLA_REGION, config.TESLA_POLL_INTERVAL_S)
 
     backoff = 1.0
     while True:

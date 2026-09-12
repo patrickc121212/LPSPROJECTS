@@ -1,0 +1,4 @@
+# Cloudflare API token with Zone:DNS:Edit on dowdsgarage.com only.
+# Create at https://dash.cloudflare.com/profile/api-tokens -> "Edit zone DNS".
+# Copy to cloudflare.ini (gitignored) and chmod 600.
+dns_cloudflare_api_token = YOUR_TOKEN_HERE

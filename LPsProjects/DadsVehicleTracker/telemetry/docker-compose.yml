@@ -1,0 +1,63 @@
+# Fleet Telemetry receiver for Dad's Tesla Tracker.
+#
+#   cars --(mTLS :443)--> fleet-telemetry --(MQTT)--> mosquitto <-- telemetry_worker.py (Flask app)
+#
+# Run on the home server. Only port 443 needs to be reachable from the
+# internet (router port-forward); MQTT stays on the LAN / Tailscale.
+#
+#   docker compose --profile cert run --rm certbot        # first cert (one-off)
+#   docker compose up -d                                  # receiver + broker
+#   docker compose --profile cert run --rm certbot-renew  # cron this weekly
+
+services:
+  fleet-telemetry:
+    image: tesla/fleet-telemetry:v0.9.4
+    container_name: fleet-telemetry
+    restart: unless-stopped
+    command: ["-config=/etc/fleet-telemetry/config.json"]
+    ports:
+      - "443:443"
+    volumes:
+      - ./fleet-telemetry.json:/etc/fleet-telemetry/config.json:ro
+      - ./certs/live/${TELEMETRY_HOST}:/etc/certs:ro
+    environment:
+      # The internet scans 443; keep the log readable.
+      SUPPRESS_TLS_HANDSHAKE_ERROR_LOGGING: "true"
+    depends_on:
+      - mosquitto
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    restart: unless-stopped
+    ports:
+      # LAN/Tailscale only — do NOT forward this port on the router.
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+
+  # --- Let's Encrypt via Cloudflare DNS-01 (no port 80 needed) -------------
+  certbot:
+    profiles: ["cert"]
+    image: certbot/dns-cloudflare:latest
+    volumes:
+      - ./certs:/etc/letsencrypt
+      - ./cloudflare.ini:/cloudflare.ini:ro
+    command: >
+      certonly --non-interactive --agree-tos
+      --email ${LETSENCRYPT_EMAIL}
+      --dns-cloudflare --dns-cloudflare-credentials /cloudflare.ini
+      --dns-cloudflare-propagation-seconds 30
+      -d ${TELEMETRY_HOST}
+
+  certbot-renew:
+    profiles: ["cert"]
+    image: certbot/dns-cloudflare:latest
+    volumes:
+      - ./certs:/etc/letsencrypt
+      - ./cloudflare.ini:/cloudflare.ini:ro
+    command: renew --non-interactive --dns-cloudflare --dns-cloudflare-credentials /cloudflare.ini
+
+volumes:
+  mosquitto-data:

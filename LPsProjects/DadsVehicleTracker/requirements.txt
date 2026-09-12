@@ -1,7 +1,9 @@
 Flask>=3.0
 python-dotenv>=1.0
-# Optional, only needed for real Tesla Fleet API calls (not the simulator)
+# Tesla Fleet API (registration, OAuth, polling fallback)
 tesla-fleet-api>=1.0
+# Fleet Telemetry consumer (VEHICLE_SOURCE=telemetry)
+paho-mqtt>=2.0
 # Optional, only needed for real SMS sends (not the dev dry-run)
 twilio>=8.0
 
