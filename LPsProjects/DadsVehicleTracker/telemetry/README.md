@@ -3,7 +3,8 @@
 The cars push their position to a server **you** run; Tesla charges per
 signal (150,000 / $1) instead of per poll (500 / $1). Three cars at the
 configured rates cost well under the $10/month credit. This folder is that
-server. It runs on the home Pi/NUC next to the Flask app.
+server. It runs on the home server next to the Flask app (currently: the Windows
+PC, under Docker Desktop).
 
 ```
 Tesla car ──mTLS :443──▶ fleet-telemetry ──MQTT──▶ mosquitto ◀── telemetry_worker.py (Flask)
@@ -55,12 +56,21 @@ docker compose --profile cert run --rm certbot
 ls certs/live/telemetry.dowdsgarage.com/     # fullchain.pem  privkey.pem  chain.pem
 ```
 
-Build the CA bundle the cars will be told to trust (the chain that *issued*
-the server cert — intermediate + root):
+The receiver runs as uid 65532 while certbot writes as root; the deploy hook
+in `hooks/` fixes ownership so the receiver can read the key. It runs
+automatically on issue and renew. If you ever see
+`permission denied ... fullchain.pem` in the receiver log, run it by hand:
 
 ```bash
-cat certs/live/telemetry.dowdsgarage.com/chain.pem > certs/ca.pem
-curl -fsSL https://letsencrypt.org/certs/isrgrootx1.pem >> certs/ca.pem
+docker run --rm -v "$PWD/certs:/etc/letsencrypt" -v "$PWD/hooks:/h:ro" alpine sh /h/10-fleet-telemetry-perms.sh
+```
+
+Build the CA bundle the cars will be told to trust — the chain that
+*issued* the server cert. Certbot's `chain.pem` already holds the
+intermediate(s) and root:
+
+```bash
+cp certs/live/telemetry.dowdsgarage.com/chain.pem certs/ca.pem
 ```
 
 Renewal: Let's Encrypt certs last 90 days. Add to the server's crontab:

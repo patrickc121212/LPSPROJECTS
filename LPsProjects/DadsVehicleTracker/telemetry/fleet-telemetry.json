@@ -29,7 +29,7 @@
     "message_limit": 1000
   },
   "tls": {
-    "server_cert": "/etc/certs/fullchain.pem",
-    "server_key": "/etc/certs/privkey.pem"
+    "server_cert": "/etc/letsencrypt/live/telemetry.dowdsgarage.com/fullchain.pem",
+    "server_key": "/etc/letsencrypt/live/telemetry.dowdsgarage.com/privkey.pem"
   }
 }
