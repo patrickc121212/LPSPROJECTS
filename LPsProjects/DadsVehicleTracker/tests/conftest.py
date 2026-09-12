@@ -91,6 +91,16 @@ def door(key: str) -> config.GarageDoor:
     return config.GARAGE_DOORS_BY_KEY[key]
 
 
+def owned_by(vehicle_key: str) -> config.GarageDoor:
+    """The door this vehicle owns — tests shouldn't encode the house layout."""
+    return next(d for d in config.GARAGE_DOORS if d.owner_key == vehicle_key)
+
+
+def other_driver(door_: config.GarageDoor) -> str:
+    """Some vehicle key that does NOT own the door."""
+    return next(v.key for v in config.VEHICLES if v.key != door_.owner_key)
+
+
 def at(d: config.GarageDoor, offset_m: float = 0.0) -> dict:
     """A vehicle state positioned `offset_m` metres north of the door."""
     return {"latitude": d.latitude + offset_m / 111_320.0, "longitude": d.longitude}

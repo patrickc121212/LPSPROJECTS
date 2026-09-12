@@ -9,9 +9,9 @@ Built per [Plan.md](Plan.md). Vehicles:
 
 | Key  | Driver | Vehicle          | Owns    |
 |------|--------|------------------|---------|
-| dad  | Dad    | Cyberbeast       | Garage 1|
-| lp   | LP     | Model 3          | Garage 2|
-| mom  | Mom    | Model Y          | Garage 3|
+| mom  | Mom    | Model Y "Rosie"        | Garage 1 |
+| dad  | Dad    | Cybertruck "AeroTitan" | Garage 2 (middle) |
+| lp   | LP     | Model 3                | Garage 3 |
 
 ## Features
 

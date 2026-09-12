@@ -88,7 +88,7 @@ def test_flush_writes_db_and_publishes(events):
 def test_telemetry_drives_geofence(fired):
     """Location via MQTT -> flush -> geofence tick: entering home fires."""
     import geofence_worker as gw
-    g1 = config.GARAGE_DOORS_BY_KEY["garage1"]
+    g1 = next(d for d in config.GARAGE_DOORS if d.owner_key == "dad")
     far = {"latitude": g1.latitude + 0.01, "longitude": g1.longitude}
     home = {"latitude": g1.latitude, "longitude": g1.longitude}
     _msg("VIN_DAD", "Location", far); tw.flush(); gw._tick()

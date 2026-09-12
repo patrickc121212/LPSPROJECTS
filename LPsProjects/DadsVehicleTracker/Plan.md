@@ -10,9 +10,11 @@
 - Messaging: BOTH in-app inbox per driver AND SMS via Twilio. In-app is source of truth; SMS push if recipient hasn't checked in for N minutes.
 
 ## Vehicles
-- Dad's Cyberbeast — owner of Garage 1
-- LP's Model 3 — owner of Garage 2
-- Mom's Model Y — owner of Garage 3
+- Mom's Model Y ("Rosie") — owner of Garage 1
+- Dad's Cybertruck ("AeroTitan") — owner of Garage 2 (middle bay)
+- LP's Model 3 — owner of Garage 3
+
+(Door numbers follow the physical bays so Google Home's "Open Garage N" moves door N. Confirmed on site 2026-09-12.)
 
 ## Core features
 1. Live map (Leaflet + OpenStreetMap tiles) showing 3 vehicles, refreshed via SSE.

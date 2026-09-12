@@ -46,6 +46,10 @@ VEHICLES_BY_KEY = {v.key: v for v in VEHICLES}
 # Each door = one Shelly device, exposed to the web tier only through a
 # Google Assistant Routine. We trigger the routine by name; Google Home
 # does the Shelly round-trip on its end.
+#
+# Numbering follows the physical bays so "Open Garage N" in Google Home
+# moves door N: 1 = Rosie (Mom), 2 = middle / AeroTitan (Dad), 3 = Model 3 (LP).
+# Override owners with GARAGE{N}_OWNER if the cars ever swap bays.
 
 @dataclass(frozen=True)
 class GarageDoor:
@@ -66,7 +70,7 @@ GARAGE_DOORS: list[GarageDoor] = [
         routine_close=os.getenv("GARAGE1_CLOSE_ROUTINE", "Close Garage 1"),
         latitude=float(os.getenv("GARAGE1_LAT", "37.7749")),
         longitude=float(os.getenv("GARAGE1_LON", "-122.4194")),
-        owner_key="dad",
+        owner_key=os.getenv("GARAGE1_OWNER", "mom"),    # Rosie's bay
     ),
     GarageDoor(
         key="garage2", label="Garage 2",
@@ -74,7 +78,7 @@ GARAGE_DOORS: list[GarageDoor] = [
         routine_close=os.getenv("GARAGE2_CLOSE_ROUTINE", "Close Garage 2"),
         latitude=float(os.getenv("GARAGE2_LAT", "37.7755")),
         longitude=float(os.getenv("GARAGE2_LON", "-122.4180")),
-        owner_key="lp",
+        owner_key=os.getenv("GARAGE2_OWNER", "dad"),    # middle bay, the Cybertruck
     ),
     GarageDoor(
         key="garage3", label="Garage 3",
@@ -82,7 +86,7 @@ GARAGE_DOORS: list[GarageDoor] = [
         routine_close=os.getenv("GARAGE3_CLOSE_ROUTINE", "Close Garage 3"),
         latitude=float(os.getenv("GARAGE3_LAT", "37.7760")),
         longitude=float(os.getenv("GARAGE3_LON", "-122.4170")),
-        owner_key="mom",
+        owner_key=os.getenv("GARAGE3_OWNER", "lp"),     # Model 3
     ),
 ]
 GARAGE_DOORS_BY_KEY = {g.key: g for g in GARAGE_DOORS}
