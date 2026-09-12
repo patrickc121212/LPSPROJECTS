@@ -40,6 +40,20 @@
 </section>
 
 <script>
+  // Live door state via SSE (the geofence worker or another browser may
+  // flip a door while this page is open).
+  const es = new EventSource('/stream');
+  es.onmessage = (ev) => {
+    let msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
+    if (msg.event !== 'doors') return;
+    msg.data.forEach(row => {
+      const el = document.getElementById('door-state-' + row.door_key);
+      if (!el) return;
+      const open = row.is_open === 1 || row.is_open === true;
+      el.textContent = row.is_open == null ? 'unknown' : (open ? 'OPEN' : 'closed');
+      el.className = 'state' + (row.is_open == null ? '' : (open ? ' open' : ' closed'));
+    });
+  };
   document.querySelectorAll('.btn[data-action]').forEach(b => {
     b.addEventListener('click', () => {
       fetch('/api/door', {

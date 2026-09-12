@@ -24,26 +24,39 @@ Built per [Plan.md](Plan.md). Vehicles:
    Shelly Cloud skill handles the relay.
 4. **Geofence auto-open** — the Tesla poller runs every ~30s; the
    geofence worker computes haversine distance to each door's center
-   and fires the door's open routine when a permitted vehicle enters.
-   Permissions: **owner-per-door + explicit allowlist**. Debounced to
-   avoid re-firing while a car sits in the zone.
+   and fires the door's open routine on the moment a permitted vehicle
+   **enters** the circle (edge-triggered — a car parked at home never
+   re-fires). `GEOFENCE_DEBOUNCE_S` is a second guard against GPS jitter
+   at the fence line. Permissions: **owner-per-door + explicit allowlist**.
 5. **Allowlist editor** — `/doors` page lets you grant or revoke a
    non-owner's auto-open access per door.
 
 ## Quick start
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env
-# edit .env (set APP_PASSWORD; leave simulator on for now)
+cp .env.example .env               # Windows: copy .env.example .env
+# edit .env (set APP_PASSWORD + FLASK_SECRET; leave simulator on for now)
 python app.py
 # open http://localhost:5000  (sign in as family / changeme)
 ```
 
 In simulator mode (default when `TESLA_ACCESS_TOKEN` is empty) each
-vehicle orbits its owner's garage so you can see the geofence auto-open
-firing end-to-end without real cars or real Shellys.
+vehicle drives a scripted round trip from its owner's garage — park,
+~600 m out, park, back — so you can watch the geofence auto-open fire on
+every return without real cars or real Shellys. Set
+`TESLA_POLL_INTERVAL_S=2` in `.env` for a faster demo loop.
+
+## Tests
+
+```bash
+pytest            # 61 tests, ~15 s, no network
+```
+
+The suite runs against a temp SQLite file with the background workers
+disabled. Tesla, Twilio and the Google webhook are faked.
 
 ## Wiring up real services
 
@@ -52,9 +65,13 @@ firing end-to-end without real cars or real Shellys.
 2. Register a partner application and get a `client_id` + `client_secret`.
 3. Pair each VIN via the Fleet API OAuth flow. Put the resulting bearer
    token in `TESLA_ACCESS_TOKEN` and the VINs in `TESLA_VIN_DAD` /
-   `TESLA_VIN_LP` / `TESLA_VIN_MOM`.
+   `TESLA_VIN_LP` / `TESLA_VIN_MOM`. Set `TESLA_REGION` (`na`/`eu`/`cn`).
 4. Set `TRACKER_SIMULATE=0`. The poller switches to the real Fleet API
-   client automatically.
+   client automatically. On a 429 it backs off ×4 per hit (capped at 16×
+   the poll interval); other errors back off ×2.
+
+The real-API path has been written against `tesla-fleet-api` 1.5 but has
+not yet been run against a live token — watch the log on first start.
 
 ### Google Assistant Routines (for Shelly)
 We do NOT call the Shelly API directly. The flow is:
@@ -77,7 +94,12 @@ Or use Google Apps Script as a webhook receiver that calls the Smart Home API di
 2. Drop `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`
    into `.env`, plus each driver's phone in `PHONE_DAD` / `PHONE_LP` /
    `PHONE_MOM`.
-3. Point Twilio's inbound webhook at `https://your-host/sms`.
+3. Point Twilio's inbound webhook at `https://your-host/sms`. Once
+   `TWILIO_AUTH_TOKEN` is set, every inbound request must carry a valid
+   `X-Twilio-Signature` or it gets a 403.
+
+Fallback SMS never marks a message read in the app — it's a nudge. Each
+message is pushed at most once (`inbox.sms_sent_at`).
 
 ### Tailscale + in-car browser
 Run this on your home server (Pi/NUC), bind to the Tailscale interface
@@ -121,6 +143,7 @@ DadsVehicleTracker/
 ├── templates/          Jinja2 templates
 ├── static/             app.js, style.css
 ├── data/               SQLite file (gitignored)
+├── tests/              pytest suite (conftest + 4 modules)
 ├── requirements.txt
 ├── .env.example
 └── README.md

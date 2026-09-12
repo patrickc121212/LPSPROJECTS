@@ -6,8 +6,12 @@ Routine the first time a permitted vehicle ENTERS the geofence.
 Permissions:
   - The door's owner vehicle always opens it.
   - Other vehicles may open if the door's allowlist (in SQLite) contains them.
-  - Debounced per (vehicle, door) pair so we don't fire the routine every
-    poll while the car sits in the zone.
+
+Firing is EDGE-triggered: we remember whether each (vehicle, door) pair was
+inside on the previous tick and only fire on the outside -> inside
+transition. A car parked in the garage all night therefore fires once, not
+once per debounce window. GEOFENCE_DEBOUNCE_S is a second guard against
+GPS jitter flapping a car across the fence line.
 
 We trigger the routine by POSTing to a Google Home webhook
 (GOOGLE_ROUTINE_WEBHOOK_URL). In v1 the body is just the routine name;
@@ -35,6 +39,10 @@ WEBHOOK_TOKEN = os.getenv("GOOGLE_ROUTINE_WEBHOOK_TOKEN", "")
 
 # (vehicle_key, door_key) -> last fire timestamp
 _last_fire: dict[tuple[str, str], float] = {}
+# (vehicle_key, door_key) -> was the vehicle inside the fence last tick?
+# Missing key == unknown; we treat the first observation as a baseline and
+# never fire on it, so a restart with a car already parked inside is silent.
+_inside: dict[tuple[str, str], bool] = {}
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -70,30 +78,52 @@ def _trigger_routine(routine_name: str) -> None:
         log.warning("Routine webhook failed for %s: %s", routine_name, exc)
 
 
-def _tick() -> None:
-    now = time.time()
-    states = {s["vehicle_key"]: s for s in models.all_vehicle_states()}
+def evaluate(
+    states: dict[str, dict[str, Any]],
+    allowlists: dict[str, set[str]],
+    now: float,
+) -> list[tuple[str, str]]:
+    """Pure decision step. Returns the (vehicle_key, door_key) pairs that
+    should trigger an auto-open this tick, and updates the edge/debounce
+    state. Split from _tick so it can be unit-tested without SQLite."""
+    fire: list[tuple[str, str]] = []
     for door in config.GARAGE_DOORS:
-        allow = models.get_allowlist(door.key)
+        allow = allowlists.get(door.key, set())
         for v in config.VEHICLES:
+            key = (v.key, door.key)
             s = states.get(v.key)
             if not s or s.get("latitude") is None or s.get("longitude") is None:
+                # No fix: keep whatever we knew; don't flip to "outside",
+                # otherwise a GPS dropout followed by a fix re-fires.
                 continue
             dist = haversine_m(s["latitude"], s["longitude"], door.latitude, door.longitude)
             inside = dist <= door.radius_m
-            if not inside:
+            was_inside = _inside.get(key)
+            _inside[key] = inside
+
+            if not inside or was_inside is None or was_inside:
+                # Outside, first observation (baseline), or still inside.
                 continue
+            # Outside -> inside transition.
             if not config.allowed_for_door(v.key, door.key, allow):
                 continue
-
-            key = (v.key, door.key)
-            last = _last_fire.get(key, 0.0)
-            if now - last < config.GEOFENCE_DEBOUNCE_S:
+            last = _last_fire.get(key)
+            if last is not None and now - last < config.GEOFENCE_DEBOUNCE_S:
                 continue
             _last_fire[key] = now
-            _trigger_routine(door.routine_open)
-            models.upsert_door_state(door.key, True)
-            bus.publish("doors", models.all_door_states())
+            fire.append(key)
+    return fire
+
+
+def _tick() -> None:
+    states = {s["vehicle_key"]: s for s in models.all_vehicle_states()}
+    allowlists = {d.key: models.get_allowlist(d.key) for d in config.GARAGE_DOORS}
+    for vehicle_key, door_key in evaluate(states, allowlists, time.time()):
+        door = config.GARAGE_DOORS_BY_KEY[door_key]
+        log.info("Geofence enter: %s -> %s", vehicle_key, door.label)
+        _trigger_routine(door.routine_open)
+        models.upsert_door_state(door.key, True)
+        bus.publish("doors", models.all_door_states())
 
 
 def _loop() -> None:

@@ -20,9 +20,11 @@ Routes:
 """
 from __future__ import annotations
 
-import json
+import hmac
 import logging
-import time
+import os
+import queue
+from datetime import datetime
 from functools import wraps
 from typing import Any
 
@@ -39,8 +41,6 @@ from flask import (
     url_for,
 )
 
-import os as _os
-
 import config
 import geofence_worker
 import models
@@ -55,15 +55,28 @@ logging.basicConfig(
 log = logging.getLogger("app")
 
 
-def create_app() -> Flask:
+def create_app(start_workers: bool = True) -> Flask:
+    """Build the Flask app. `start_workers=False` skips the background
+    threads (poller / geofence / SMS sweeper) — used by the test suite."""
     app = Flask(__name__, static_folder="static", template_folder="templates")
-    app.secret_key = _os.getenv("FLASK_SECRET", "dev-only-change-me")
+    app.secret_key = os.getenv("FLASK_SECRET", "dev-only-change-me")
     app.config["JSON_SORT_KEYS"] = False
+    # The JSON API is cookie-authenticated; Lax blocks cross-site POSTs
+    # from carrying the session cookie, which is our CSRF story for v1.
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
 
     models.init_db()
-    tesla_poller.start_background()
-    geofence_worker.start_background()
-    sms.start_background()
+    if start_workers:
+        tesla_poller.start_background()
+        geofence_worker.start_background()
+        sms.start_background()
+
+    @app.template_filter("localtime")
+    def _localtime(ts: float | None) -> str:
+        if not ts:
+            return ""
+        return datetime.fromtimestamp(ts).strftime("%b %d, %I:%M %p")
 
     # --- Auth -------------------------------------------------------------
 
@@ -80,9 +93,15 @@ def create_app() -> Flask:
         if request.method == "POST":
             u = request.form.get("username", "")
             p = request.form.get("password", "")
-            if u == config.SHARED_LOGIN_USERNAME and p == config.SHARED_LOGIN_PASSWORD:
+            ok_u = hmac.compare_digest(u, config.SHARED_LOGIN_USERNAME)
+            ok_p = hmac.compare_digest(p, config.SHARED_LOGIN_PASSWORD)
+            if ok_u and ok_p:
                 session["user"] = u
-                return redirect(request.args.get("next") or url_for("map_view"))
+                nxt = request.args.get("next", "")
+                # Only follow relative paths; never an absolute URL.
+                if not nxt.startswith("/") or nxt.startswith("//"):
+                    nxt = url_for("map_view")
+                return redirect(nxt)
             flash("Invalid credentials.", "error")
         return render_template("login.html")
 
@@ -103,6 +122,7 @@ def create_app() -> Flask:
         return render_template(
             "map.html",
             vehicles=config.VEHICLES,
+            vehicles_public=[v.public() for v in config.VEHICLES],
             doors=config.GARAGE_DOORS,
         )
 
@@ -110,6 +130,8 @@ def create_app() -> Flask:
     @login_required
     def inbox_view():
         me = request.args.get("as", config.VEHICLES[0].key)
+        if me not in config.VEHICLES_BY_KEY:
+            abort(404)
         return render_template(
             "inbox.html",
             vehicles=config.VEHICLES,
@@ -209,15 +231,13 @@ def create_app() -> Flask:
             try:
                 # Send a hello so the EventSource open event round-trips.
                 yield "event: hello\ndata: {}\n\n"
-                last_ping = time.time()
                 while True:
                     try:
                         payload = q.get(timeout=15.0)
                         yield f"data: {payload}\n\n"
-                    except Exception:
+                    except queue.Empty:
                         # keep-alive comment; prevents proxies from dropping us
                         yield ": ping\n\n"
-                        last_ping = time.time()
             finally:
                 bus.unsubscribe(sid)
 
@@ -227,25 +247,30 @@ def create_app() -> Flask:
             "Connection": "keep-alive",
         })
 
-    # --- Twilio inbound webhook (no login required, signature-checked in prod) ----
+    # --- Twilio inbound webhook. No login; authenticated by X-Twilio-Signature
+    # whenever TWILIO_AUTH_TOKEN is set (dev accepts unsigned). ----------------
 
     @app.route("/sms", methods=["POST"])
     def sms_inbound():
-        result = sms.handle_inbound(
+        if not sms.verify_signature(
+            request.url,
+            request.form.to_dict(),
+            request.headers.get("X-Twilio-Signature", ""),
+        ):
+            abort(403)
+        sms.handle_inbound(
             from_number=request.form.get("From", ""),
             body=request.form.get("Body", ""),
         )
-        # Twilio expects TwiML.
+        # Twilio expects TwiML; an empty <Response> means "no reply".
         xml = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
-        return Response(xml, mimetype="text/xml"), 200 if result.get("status") == "stored" else 200
+        return Response(xml, mimetype="text/xml")
 
     return app
 
 
-app = create_app()
-
-
 if __name__ == "__main__":
+    app = create_app()
     # Bind to all interfaces so Tailscale (and the in-car browser over
     # MagicDNS) can reach us; in production put a reverse proxy in front.
-    app.run(host="0.0.0.0", port=int(_os.getenv("PORT", "5000")), threaded=True)
+    app.run(host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "5000")), threaded=True)

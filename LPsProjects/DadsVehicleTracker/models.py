@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS inbox (
     recipient_key  TEXT NOT NULL,  -- vehicle key of recipient
     body           TEXT NOT NULL,
     created_at     REAL NOT NULL,
-    read_at        REAL            -- NULL = unread
+    read_at        REAL,           -- NULL = unread
+    sms_sent_at    REAL            -- NULL = not pushed over SMS (yet)
 );
 
 CREATE TABLE IF NOT EXISTS allowlist (
@@ -78,9 +79,20 @@ def db():
         conn.close()
 
 
+# Columns added after the first release. Applied idempotently on startup so
+# an existing data/tracker.db picks them up without a manual migration.
+_MIGRATIONS = [
+    ("inbox", "sms_sent_at", "ALTER TABLE inbox ADD COLUMN sms_sent_at REAL"),
+]
+
+
 def init_db() -> None:
     with db() as conn:
         conn.executescript(SCHEMA)
+        for table, column, ddl in _MIGRATIONS:
+            cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in cols:
+                conn.execute(ddl)
         # Seed door_state rows so SSE has a stable shape from t=0
         now = time.time()
         for door in GARAGE_DOORS:
@@ -168,11 +180,29 @@ def add_message(sender_key: str, recipient_key: str, body: str) -> int:
 def list_inbox(recipient_key: str, limit: int = 100) -> list[dict]:
     with db() as conn:
         rows = conn.execute(
-            "SELECT id, sender_key, recipient_key, body, created_at, read_at "
+            "SELECT id, sender_key, recipient_key, body, created_at, read_at, sms_sent_at "
             "FROM inbox WHERE recipient_key = ? ORDER BY id DESC LIMIT ?",
             (recipient_key, limit),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def unread_unpushed(recipient_key: str, older_than: float) -> list[dict]:
+    """Unread messages created before `older_than` that haven't been pushed
+    over SMS yet. Oldest first so the fallback sends in order."""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, sender_key, recipient_key, body, created_at "
+            "FROM inbox WHERE recipient_key = ? AND read_at IS NULL "
+            "AND sms_sent_at IS NULL AND created_at < ? ORDER BY id ASC",
+            (recipient_key, older_than),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_sms_sent(message_id: int) -> None:
+    with db() as conn:
+        conn.execute("UPDATE inbox SET sms_sent_at = ? WHERE id = ?", (time.time(), message_id))
 
 
 def mark_read(recipient_key: str) -> None:

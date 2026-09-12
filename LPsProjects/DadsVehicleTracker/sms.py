@@ -32,16 +32,37 @@ DRIVER_PHONES = {
 }
 
 
-def send_sms(to: str, body: str) -> None:
-    if not (TW_SID and TW_TOKEN and TW_FROM):
+def configured() -> bool:
+    return bool(TW_SID and TW_TOKEN and TW_FROM)
+
+
+def send_sms(to: str, body: str) -> bool:
+    """Returns True if the message was handed to Twilio (or dry-run logged)."""
+    if not configured():
         log.info("[dry-run sms] to=%s body=%r", to, body)
-        return
+        return True
     try:
         from twilio.rest import Client  # type: ignore
         Client(TW_SID, TW_TOKEN).messages.create(to=to, from_=TW_FROM, body=body)
         log.info("SMS sent to %s", to)
+        return True
     except Exception as exc:  # noqa: BLE001
         log.warning("SMS send failed: %s", exc)
+        return False
+
+
+def verify_signature(url: str, form: dict[str, str], signature: str) -> bool:
+    """Validate X-Twilio-Signature on the inbound webhook. When Twilio isn't
+    configured (dev) there is no auth token to check against, so we accept;
+    once TWILIO_AUTH_TOKEN is set every request must be signed."""
+    if not TW_TOKEN:
+        return True
+    try:
+        from twilio.request_validator import RequestValidator  # type: ignore
+    except ImportError:
+        log.warning("twilio package missing; cannot verify webhook signature")
+        return False
+    return RequestValidator(TW_TOKEN).validate(url, form, signature)
 
 
 # --- Inbound webhook handler ----------------------------------------------
@@ -67,22 +88,28 @@ def handle_inbound(from_number: str, body: str) -> dict[str, Any]:
 
 # --- Fallback sweeper ------------------------------------------------------
 
-def _maybe_send_fallbacks() -> None:
-    now = time.time()
+def _maybe_send_fallbacks(now: float | None = None) -> int:
+    """Push unread, not-yet-pushed messages over SMS for drivers who haven't
+    opened the inbox recently. Each message is pushed at most once and stays
+    UNREAD in the app — the SMS is a nudge, not a read receipt. Returns the
+    number of SMS sent."""
+    now = time.time() if now is None else now
+    cutoff = now - config.SMS_FALLBACK_AFTER_S
+    sent = 0
     for v in config.VEHICLES:
         phone = DRIVER_PHONES.get(v.key, "")
         if not phone:
             continue
         last_seen = models.last_seen(v.key) or 0.0
-        # Unread messages older than the threshold AND not seen recently → SMS.
-        for m in models.list_inbox(v.key, limit=20):
-            if m["read_at"] is None and (now - m["created_at"]) > config.SMS_FALLBACK_AFTER_S \
-                    and (now - last_seen) > config.SMS_FALLBACK_AFTER_S:
-                sender = next((x.label for x in config.VEHICLES if x.key == m["sender_key"]), "Family")
-                send_sms(phone, f"[{sender}] {m['body']}")
-                # Mark as read so we don't re-send every tick.
-                models.mark_read(v.key)
-                break
+        if last_seen > cutoff:
+            continue  # they've been in the app recently; in-app is enough
+        for m in models.unread_unpushed(v.key, older_than=cutoff):
+            sender = config.VEHICLES_BY_KEY.get(m["sender_key"])
+            label = sender.driver if sender else "Family"
+            if send_sms(phone, f"[{label}] {m['body']}"):
+                models.mark_sms_sent(m["id"])
+                sent += 1
+    return sent
 
 
 def _loop() -> None:

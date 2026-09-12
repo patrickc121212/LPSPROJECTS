@@ -10,7 +10,6 @@ import json
 import queue
 import threading
 import time
-from collections import defaultdict
 from typing import Any
 
 MAXSIZE = 256
@@ -37,15 +36,18 @@ class EventBus:
     def publish(self, event: str, data: Any) -> None:
         payload = json.dumps({"event": event, "data": data, "ts": time.time()})
         with self._lock:
-            dead: list[int] = []
-            for sid, q in self._subs.items():
+            for q in self._subs.values():
                 try:
                     q.put_nowait(payload)
                 except queue.Full:
-                    # Drop for this slow subscriber; they'll get the next one.
-                    dead.append(sid)
-            for sid in dead:
-                self._subs.pop(sid, None)
+                    # Drop this event for the slow subscriber only. Every
+                    # publisher sends full snapshots, so the next one that
+                    # fits brings them back up to date.
+                    pass
+
+    def subscriber_count(self) -> int:
+        with self._lock:
+            return len(self._subs)
 
 
 # Module-level singleton — importable from app, geofence, poller, sms.

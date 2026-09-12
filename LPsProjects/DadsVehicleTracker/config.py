@@ -8,7 +8,13 @@ the SQLite DB (allowlist overrides, inbox, door state).
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
+from dotenv import load_dotenv
+
+# Load .env before anything reads os.getenv(). config is the first module
+# every other module imports, so this runs exactly once, up front.
+load_dotenv()
 
 
 # --- Vehicles ---------------------------------------------------------------
@@ -21,6 +27,11 @@ class Vehicle:
     driver: str         # display name for messaging
     color: str          # map marker color
     icon: str           # "cybertruck" | "model3" | "modely"
+
+    def public(self) -> dict:
+        """Fields safe to ship to the browser (no VIN)."""
+        return {"key": self.key, "label": self.label, "driver": self.driver,
+                "color": self.color, "icon": self.icon}
 
 
 VEHICLES: list[Vehicle] = [
@@ -81,9 +92,12 @@ GARAGE_DOORS_BY_KEY = {g.key: g for g in GARAGE_DOORS}
 
 # Tesla Fleet API poll cadence (seconds). Keep conservative; back off on 429.
 TESLA_POLL_INTERVAL_S = int(os.getenv("TESLA_POLL_INTERVAL_S", "30"))
+# Fleet API region: "na" | "eu" | "cn".
+TESLA_REGION = os.getenv("TESLA_REGION", "na")
 
-# Debounce so we don't re-trigger the same routine in rapid succession
-# (e.g. vehicle sits in the geofence for several poll cycles).
+# Auto-open fires on the outside->inside transition only. This debounce is
+# a second guard so GPS jitter at the fence edge can't re-fire the routine
+# by flapping in and out within this window.
 GEOFENCE_DEBOUNCE_S = int(os.getenv("GEOFENCE_DEBOUNCE_S", "120"))
 
 # SMS fallback cadence — if a driver hasn't checked in for this long,

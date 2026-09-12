@@ -28,7 +28,7 @@
             <div class="msg-head">
               <span class="dot" style="--c: {{ sender.color }}"></span>
               <strong>{{ sender.label }}</strong>
-              <time>{{ m.created_at|int }}</time>
+              <time>{{ m.created_at|localtime }}</time>
             </div>
             <p>{{ m.body }}</p>
           </li>
