@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Garage Doors — Tesla Tracker{% endblock %}
+{% block content %}
+<section class="doors-page">
+  <h1>Garage Doors</h1>
+  <p class="muted">Each door is a Shelly linked to Google Home. We trigger Google Assistant Routines to open/close — no direct Shelly API calls from the web tier.</p>
+
+  <div class="doors-grid">
+    {% for d in doors %}
+      {% set ds = door_states|selectattr('door_key','equalto',d.key)|first %}
+      {% set al = allowlists.get(d.key, []) %}
+      <div class="door-card" data-door="{{ d.key }}">
+        <header>
+          <h2>{{ d.label }}</h2>
+          <span class="state" id="door-state-{{ d.key }}">
+            {% if ds and ds.is_open == 1 %}OPEN{% elif ds and ds.is_open == 0 %}closed{% else %}unknown{% endif %}
+          </span>
+        </header>
+        <p class="muted">Owner: <strong>{{ vehicles|selectattr('key','equalto',d.owner_key)|first|attr('label') }}</strong> · Radius {{ d.radius_m }} m</p>
+        <div class="actions">
+          <button class="btn open"  data-action="open"  data-door="{{ d.key }}">Open</button>
+          <button class="btn close" data-action="close" data-door="{{ d.key }}">Close</button>
+        </div>
+        <fieldset>
+          <legend>Allowlist (other vehicles)</legend>
+          {% for v in vehicles %}
+            {% if v.key != d.owner_key %}
+              <label>
+                <input type="checkbox" value="{{ v.key }}"
+                       {% if v.key in al %}checked{% endif %}>
+                {{ v.label }}
+              </label>
+            {% endif %}
+          {% endfor %}
+          <button class="save">Save</button>
+        </fieldset>
+      </div>
+    {% endfor %}
+  </div>
+</section>
+
+<script>
+  document.querySelectorAll('.btn[data-action]').forEach(b => {
+    b.addEventListener('click', () => {
+      fetch('/api/door', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({door_key: b.dataset.door, action: b.dataset.action})
+      });
+    });
+  });
+  document.querySelectorAll('.door-card').forEach(card => {
+    const door = card.dataset.door;
+    card.querySelector('.save').addEventListener('click', () => {
+      const vehicle_keys = [...card.querySelectorAll('input[type=checkbox]:checked')]
+                            .map(i => i.value);
+      fetch('/api/allowlist', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({door_key: door, vehicle_keys})
+      }).then(r => r.json()).then(() => {
+        card.querySelector('.save').textContent = 'Saved ✓';
+        setTimeout(() => card.querySelector('.save').textContent = 'Save', 1200);
+      });
+    });
+  });
+</script>
+{% endblock %}

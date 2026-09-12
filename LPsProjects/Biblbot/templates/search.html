@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block title %}Search results for "{{ query }}" - Biblbot{% endblock %}
+
+{% block content %}
+<h1>Search Results</h1>
+<p>Searching for: <strong>{{ query }}</strong></p>
+<p>Found {{ results|length }} results.</p>
+
+<div class="search-results">
+    {% for result in results %}
+    <div class="search-item">
+        <h3>
+            <a href="{{ url_for('chapter_view', identifier=result.book_abbrev, chapter_num=result.chapter) }}#v{{ result.verse_num }}">
+                {{ result.book_name }} {{ result.chapter }}:{{ result.verse_num }}
+            </a>
+        </h3>
+        <p class="verse-text">{{ result.text }}</p>
+    </div>
+    {% else %}
+    <p>No results found for your query.</p>
+    {% endfor %}
+</div>
+{% endblock %}

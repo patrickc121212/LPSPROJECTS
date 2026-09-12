@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}{{ book.name }} {{ chapter_num }} - Biblbot{% endblock %}
+
+{% block content %}
+<nav class="breadcrumb">
+    <a href="{{ url_for('index') }}">Home</a> &raquo;
+    <a href="{{ url_for('book_view', identifier=book.abbrev) }}">{{ book.name }}</a> &raquo;
+    Chapter {{ chapter_num }}
+</nav>
+
+<h1>{{ book.name }} {{ chapter_num }}</h1>
+
+<div class="pagination">
+    {% if chapter_num > 1 %}
+    <a href="{{ url_for('chapter_view', identifier=book.abbrev, chapter_num=chapter_num - 1) }}">&laquo; Previous</a>
+    {% endif %}
+
+    <span>Chapter {{ chapter_num }} of {{ num_chapters }}</span>
+
+    {% if chapter_num < num_chapters %}
+    <a href="{{ url_for('chapter_view', identifier=book.abbrev, chapter_num=chapter_num + 1) }}">Next &raquo;</a>
+    {% endif %}
+</div>
+
+<div class="verse-list">
+    {% for verse_text in chapter %}
+    <div class="verse">
+        <span class="verse-num">{{ loop.index }}</span> {{ verse_text }}
+    </div>
+    {% endfor %}
+</div>
+
+<div class="pagination">
+    {% if chapter_num > 1 %}
+    <a href="{{ url_for('chapter_view', identifier=book.abbrev, chapter_num=chapter_num - 1) }}">&laquo; Previous</a>
+    {% endif %}
+    {% if chapter_num < num_chapters %}
+    <a href="{{ url_for('chapter_view', identifier=book.abbrev, chapter_num=chapter_num + 1) }}">Next &raquo;</a>
+    {% endif %}
+</div>
+{% endblock %}

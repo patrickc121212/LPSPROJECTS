@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block title %}{{ book.name }} - Biblbot{% endblock %}
+
+{% block content %}
+<nav class="breadcrumb">
+    <a href="{{ url_for('index') }}">Home</a> &raquo; {{ book.name }}
+</nav>
+
+<h1>{{ book.name }}</h1>
+<p>Abbreviation: {{ book.abbrev }}</p>
+
+<div class="chapters-list">
+    {% for chapter_idx in range(book.chapters|length) %}
+    <a href="{{ url_for('chapter_view', identifier=book.abbrev, chapter_num=chapter_idx + 1) }}" class="chapter-link">
+        {{ chapter_idx + 1 }}
+    </a>
+    {% endfor %}
+</div>
+{% endblock %}

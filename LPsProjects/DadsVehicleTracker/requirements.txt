@@ -1,0 +1,5 @@
+Flask>=3.0
+# Optional, only needed for real Tesla Fleet API calls (not the simulator)
+tesla-fleet-api>=1.0
+# Optional, only needed for real SMS sends (not the dev dry-run)
+twilio>=8.0

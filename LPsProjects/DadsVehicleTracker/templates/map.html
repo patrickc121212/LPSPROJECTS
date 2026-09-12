@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Live Map — Tesla Tracker{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin="">
+{% endblock %}
+{% block content %}
+<div id="map"></div>
+
+<aside class="hud">
+  <h2>Vehicles</h2>
+  <ul id="vehicle-list" class="vehicle-list">
+    {% for v in vehicles %}
+      <li data-key="{{ v.key }}" style="--c: {{ v.color }}">
+        <span class="dot"></span>
+        <span class="label">{{ v.label }}</span>
+        <span class="meta" id="meta-{{ v.key }}">—</span>
+      </li>
+    {% endfor %}
+  </ul>
+
+  <h2>Garage doors</h2>
+  <ul class="door-list">
+    {% for d in doors %}
+      <li data-key="{{ d.key }}">
+        <div class="door-row">
+          <strong>{{ d.label }}</strong>
+          <span class="state" id="door-state-{{ d.key }}">…</span>
+        </div>
+        <div class="door-row">
+          <button class="btn open"  data-action="open"  data-door="{{ d.key }}">Open</button>
+          <button class="btn close" data-action="close" data-door="{{ d.key }}">Close</button>
+        </div>
+      </li>
+    {% endfor %}
+  </ul>
+</aside>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""></script>
+<script>
+  const VEHICLES = {{ vehicles|tojson }};
+  const DOORS    = {{ doors|tojson }};
+</script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% endblock %}

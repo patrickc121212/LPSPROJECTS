@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Dad's Tesla Tracker{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+{% block head %}{% endblock %}
+</head>
+<body>
+<header class="topbar">
+  <a href="{{ url_for('map_view') }}" class="brand">⚡ Tesla Tracker</a>
+  <nav>
+    <a href="{{ url_for('map_view') }}">Map</a>
+    <a href="{{ url_for('inbox_view') }}">Inbox</a>
+    <a href="{{ url_for('doors_view') }}">Doors</a>
+  </nav>
+  <div class="who">
+    <span>{{ session.get('user', '') }}</span>
+    <a href="{{ url_for('logout') }}">Logout</a>
+  </div>
+</header>
+
+<main>
+  {% with msgs = get_flashed_messages(with_categories=true) %}
+    {% for cat, m in msgs %}
+      <div class="flash {{ cat }}">{{ m }}</div>
+    {% endfor %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

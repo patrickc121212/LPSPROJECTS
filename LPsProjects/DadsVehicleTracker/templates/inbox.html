@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Inbox — Tesla Tracker{% endblock %}
+{% block content %}
+<section class="inbox-page">
+  <header class="inbox-head">
+    <h1>Family Inbox</h1>
+    <form method="get" class="me-picker">
+      <label>View as
+        <select name="as" onchange="this.form.submit()">
+          {% for v in vehicles %}
+            <option value="{{ v.key }}" {% if v.key == me %}selected{% endif %}>{{ v.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </form>
+  </header>
+
+  <div class="inbox-grid">
+    <div class="thread">
+      <h2>Messages for {{ vehicles|selectattr('key','equalto',me)|first|attr('label') }}</h2>
+      {% if not messages %}
+        <p class="muted">No messages yet.</p>
+      {% endif %}
+      <ul class="messages">
+        {% for m in messages %}
+          {% set sender = vehicles|selectattr('key','equalto',m.sender_key)|first %}
+          <li class="msg {% if not m.read_at %}unread{% endif %}">
+            <div class="msg-head">
+              <span class="dot" style="--c: {{ sender.color }}"></span>
+              <strong>{{ sender.label }}</strong>
+              <time>{{ m.created_at|int }}</time>
+            </div>
+            <p>{{ m.body }}</p>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <form class="composer" onsubmit="return sendMessage(event)">
+      <h2>Send</h2>
+      <label>From
+        <select id="sender">
+          {% for v in vehicles %}<option value="{{ v.key }}">{{ v.label }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>To
+        <select id="recipient">
+          {% for v in vehicles %}<option value="{{ v.key }}">{{ v.label }}</option>{% endfor %}
+        </select>
+      </label>
+      <textarea id="body" rows="3" placeholder="Heads up: leaving now…" required></textarea>
+      <button type="submit">Send</button>
+      <p class="hint">In-app is the source of truth. SMS will be sent as a fallback if the recipient hasn't checked in for a few minutes.</p>
+    </form>
+  </div>
+</section>
+
+<script>
+  const ME = {{ me|tojson }};
+  function sendMessage(e) {
+    e.preventDefault();
+    fetch('/api/message', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        sender_key: document.getElementById('sender').value,
+        recipient_key: document.getElementById('recipient').value,
+        body: document.getElementById('body').value
+      })
+    }).then(r => r.json()).then(() => {
+      document.getElementById('body').value = '';
+      // Light refresh; SSE will also fire an inbox event.
+      setTimeout(() => location.reload(), 300);
+    });
+    return false;
+  }
+  // Mark as read on visit + on any inbox SSE event for our recipient.
+  fetch('/api/inbox/read', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({recipient_key: ME})
+  });
+</script>
+{% endblock %}
