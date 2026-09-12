@@ -54,8 +54,10 @@ def test_gear_park_zeroes_speed():
 
 
 def test_connectivity_sets_online_flag():
+    _msg("VIN_MOM", "VehicleSpeed", 74)
     tw.handle_message("telemetry/VIN_MOM/connectivity", json.dumps({"Status": "DISCONNECTED"}).encode())
     assert tw._state["mom"]["online"] is False
+    assert tw._state["mom"]["speed_mph"] == 0.0, "offline car must not show a stale speed"
     tw.handle_message("telemetry/VIN_MOM/connectivity", json.dumps({"Status": "CONNECTED"}).encode())
     assert tw._state["mom"]["online"] is True
 

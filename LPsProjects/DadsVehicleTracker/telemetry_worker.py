@@ -104,6 +104,10 @@ def apply_connectivity(vehicle_key: str, payload: dict[str, Any]) -> None:
     with _lock:
         row = _state.setdefault(vehicle_key, {"vehicle_key": vehicle_key})
         row["online"] = str(payload.get("Status", "")).upper() == "CONNECTED"
+        if not row["online"]:
+            # The car stops reporting when it sleeps; its last speed sample
+            # would otherwise linger on the map ("74 mph" while parked).
+            row["speed_mph"] = 0.0
         row["updated_at"] = time.time()
 
 
