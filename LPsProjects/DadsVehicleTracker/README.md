@@ -52,20 +52,25 @@ every return without real cars or real Shellys. Set
 
 ## Running it 24/7 (Windows host)
 
-`run_tracker.cmd` supervises the app (restarts it 10 s after any exit) and
-logs to `data/app.log`. It's registered as the Scheduled Task
-**"Dads Vehicle Tracker"** — runs hidden at logon (+30 s so Docker is up),
-no time limit. Manage it in Task Scheduler or:
+`supervisor.pyw` (run with `pythonw.exe`, so **no console window** — the first
+cmd-based launcher died when someone closed its window) starts the app,
+restarts it 10 s after any exit, and logs to `data/app.log` (rotated at
+10 MB). It's registered as the Scheduled Task **"Dads Vehicle Tracker"** —
+runs at logon (+30 s so Docker is up), no time limit. Manage it in Task
+Scheduler or:
 
 ```powershell
 schtasks /Run  /TN "Dads Vehicle Tracker"    # start now
-schtasks /End  /TN "Dads Vehicle Tracker"    # stop (kill python.exe too if it lingers)
+schtasks /End  /TN "Dads Vehicle Tracker"    # stop (supervisor tears the app down)
 Get-Content datapp.log -Tail 50 -Wait      # follow the log
 ```
 
 Requirements for it to stay reachable: PC set to never sleep on AC
 (`powercfg /change standby-timeout-ac 0`), Docker Desktop set to start at
-sign-in, and the user logged in (the task is an at-logon task).
+sign-in, and the user logged in (the task is an at-logon task). To make the
+app survive a reboot *without* a sign-in, re-register the task with
+`-LogonType S4U` and an `-AtStartup` trigger from an **elevated** PowerShell
+(needs UAC); the Docker receiver still needs the sign-in.
 
 ## Tests
 
