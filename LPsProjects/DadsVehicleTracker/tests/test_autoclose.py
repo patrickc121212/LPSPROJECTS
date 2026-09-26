@@ -384,3 +384,43 @@ def test_parked_close_disabled_by_default(monkeypatch):
 
 def _ll(p):
     return p["latitude"], p["longitude"]
+
+
+def test_zero_delay_closes_on_the_first_reading_outside(auto_close, monkeypatch):
+    """AUTO_CLOSE_DELAY_S=0 must fire on the first position outside the close
+    fence, not one tick later."""
+    d = replace(owned_by("dad"), radius_m=150.0, close_radius_m=20.0)
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    monkeypatch.setattr(config, "GARAGE_DOORS_BY_KEY", {d.key: d})
+    monkeypatch.setattr(config, "AUTO_CLOSE_DELAY_S", 0)
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    assert gw.departure_actions({"dad": at(d, 25)}, st, now)[0] == [d.key]
+
+
+def test_zero_delay_still_requires_leaving_the_close_fence(auto_close, monkeypatch):
+    d = replace(owned_by("dad"), radius_m=150.0, close_radius_m=20.0)
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    monkeypatch.setattr(config, "GARAGE_DOORS_BY_KEY", {d.key: d})
+    monkeypatch.setattr(config, "AUTO_CLOSE_DELAY_S", 0)
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    assert gw.departure_actions({"dad": at(d, 15)}, st, now)[0] == []
+
+
+def test_warns_when_the_parked_zone_overlaps_the_close_fence(monkeypatch):
+    monkeypatch.setattr(config, "PARKED_CLOSE_ENABLED", True)
+    monkeypatch.setattr(config, "PARKED_RADIUS_M", 25.0)
+    d = replace(owned_by("dad"), close_radius_m=20.0)
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    assert any("both parked at the garage and departed" in w
+               for w in door_control.config_warnings())
+
+
+def test_no_overlap_warning_when_parked_zone_is_inside(monkeypatch):
+    monkeypatch.setattr(config, "PARKED_CLOSE_ENABLED", True)
+    monkeypatch.setattr(config, "PARKED_RADIUS_M", 15.0)
+    monkeypatch.setattr(config, "AUTO_CLOSE_ENABLED", False)
+    d = replace(owned_by("dad"), close_radius_m=20.0)
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    assert door_control.config_warnings() == []

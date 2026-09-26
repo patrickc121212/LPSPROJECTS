@@ -154,6 +154,14 @@ def config_warnings() -> list[str]:
                 f"AUTO_CLOSE_DELAY_S ({config.AUTO_CLOSE_DELAY_S}s) >= DOOR_OPEN_TTL_S "
                 f"({DOOR_OPEN_TTL_S}s): without a sensor the door's 'open' belief "
                 "expires before the close fires, so auto-close would never run")
+    if config.PARKED_CLOSE_ENABLED:
+        overlap = [d.label for d in config.GARAGE_DOORS
+                   if config.PARKED_RADIUS_M > config.close_radius(d)]
+        if overlap:
+            out.append(
+                f"PARKED_RADIUS_M ({config.PARKED_RADIUS_M:.0f} m) reaches outside the close "
+                f"fence on {', '.join(overlap)}: a car there counts as both parked at the "
+                "garage and departed")
     return out
 
 
