@@ -5,7 +5,7 @@
 - Hosting: Tailscale + LAN host (home server, e.g. Pi/NUC). Reachable from in-car browsers via MagicDNS.
 - Map updates: LIVE (push). Use SSE or WebSocket; do not rely on page refresh.
 - Auth: Shared family login — everyone sees everyone. Per-garage-door preferences live in config/DB.
-- Shelly integration: Shelly devices already linked to Google Home via the Shelly Cloud skill. Website triggers a Google Assistant Routine ("Open Dad's Garage", etc.) — no direct Shelly API call from the web tier.
+- ~~Shelly integration: website triggers a Google Assistant Routine; no direct Shelly API call from the web tier.~~ **Changed 2026-09-26: the web tier now pulses the Shelly directly over the LAN.** One hop instead of four (~50 ms vs 1–3 s), works during an internet outage, and removes the IFTTT / routine-name / Shelly-Cloud-skill dependencies. Google Home voice control still works independently through the Shelly Cloud skill — we simply do not route our own triggers through it. Per-door: a door with no `GARAGE{N}_SHELLY_HOST` falls back to the routine webhook, then to dry-run.
 - Geofence auto-open: hard-coded per-door lat/long + radius. Owner-per-door model: each garage door (Shelly) has one designated owner. Owner + allowlist override: owner's vehicle always opens; other drivers can be explicitly allowed or denied per door.
 - Messaging: BOTH in-app inbox per driver AND SMS via Twilio. In-app is source of truth; SMS push if recipient hasn't checked in for N minutes.
 
@@ -57,7 +57,8 @@
 - 81 tests pass (`pytest`, ~15 s, no network).
 
 ### Still dry-run / not wired
-- **Garage doors don't actually move yet** — `GOOGLE_ROUTINE_WEBHOOK_URL` is empty, so the geofence/door buttons log `[dry-run] would fire routine: Open Garage N`. **Blocked on hardware: the Shelly relays are not installed yet** (plan assumed they were). Order of work once they are: Shelly → Shelly app → link Shelly Cloud skill in Google Home → create routines named exactly "Open Garage 1/2/3" and "Close Garage 1/2/3" → IFTTT/Apps Script webhook → `GOOGLE_ROUTINE_WEBHOOK_URL`.
+- **Garage 2 can now physically move** (Shelly 1 Gen4 at 192.168.1.107, fw 2.0.1, `auto_off 0.5 s`). Garages 1 and 3 are still dry-run until their relays are installed. Old status below for reference:
+- ~~**Garage doors don't actually move yet**~~ — `GOOGLE_ROUTINE_WEBHOOK_URL` is empty, so the geofence/door buttons log `[dry-run] would fire routine: Open Garage N`. **Blocked on hardware: the Shelly relays are not installed yet** (plan assumed they were). Order of work once they are: Shelly → Shelly app → link Shelly Cloud skill in Google Home → create routines named exactly "Open Garage 1/2/3" and "Close Garage 1/2/3" → IFTTT/Apps Script webhook → `GOOGLE_ROUTINE_WEBHOOK_URL`.
 - **No SMS/push** — `TWILIO_*` and `PHONE_*` are empty. Decision pending: replace Twilio with **ntfy** push (free; see Open decisions).
 - ~~Nothing survives a reboot~~ **DONE 2026-09-12**: app runs under Scheduled Task "Dads Vehicle Tracker" (at logon +30 s, windowless `supervisor.pyw` via pythonw, log `data/app.log`; crash-tested: back in 12 s). **Incident 17:06–21:31**: the first launcher was a `cmd` window and someone at the PC closed it (exit 0xC000013A); site was down 4.5 h. Fixed by going windowless. PC set to never sleep/hibernate on AC. Tailscale is an auto-start service; containers are `unless-stopped`. **2026-09-26**: re-registered with an **S4U principal + at-startup trigger**, so the app now starts ~1 min after boot with nobody signed in. Ran unattended for two weeks; supervisor restarted 6× (reboots) and recovered every time. **Remaining caveat:** Docker Desktop (and therefore the telemetry receiver + MQTT) still only starts at *logon* — after a reboot with no sign-in the site is up but shows stale positions until someone signs in.
 - **Windows Firewall rule** for port 5000 restricted to Tailscale (100.64.0.0/10) was attempted but needs a UAC click; currently relying on whatever Python's existing firewall allowance is. Phone-over-tailnet access not yet confirmed (laptop test was inconclusive — laptop connectivity).
@@ -79,6 +80,16 @@
 6. **Custom domain + Access** per decision 2.
 7. **DDNS** for `telemetry.dowdsgarage.com` — home IP is `68.184.61.239` today; if the ISP rotates it, the cars lose the receiver. Cloudflare token already has DNS edit rights; a `cloudflare-ddns` container in `telemetry/docker-compose.yml` would cover it.
 8. Invite Mom and LP to the tailnet (or rely on the Funnel URL + Access).
+
+## Door control — how it works now (2026-09-26)
+- `door_control.actuate(door, action)` picks, per door: local Shelly pulse -> Google Routine webhook -> dry-run.
+- `shelly.pulse()` sends `Switch.Set?id=0&on=true&toggle_after=0.5`. `toggle_after` is passed explicitly so the pulse length never depends on the device's own `auto_off` config — if that were ever cleared, a plain `on=true` would latch the relay, i.e. hold the opener's button down indefinitely.
+- **A pulse toggles the door**; open and close are the same action. There is no sensor, so `door_state` is only ever a memory of our last pulse. The UI says so on `/doors`.
+- Two guards make auto-open safe enough to enable without a sensor:
+  1. **Never auto-fire at a door we believe is open** — pulsing an open door would shut it on the arriving car.
+  2. **Clear that belief when the door's owner leaves the geofence** — the door has closed behind them, so a quick trip out and back still auto-opens. Without this, the belief would block re-opens for `DOOR_OPEN_TTL_S` (default 600 s).
+- Residual risk that only a sensor removes: if a door is left open manually and the owner's car then arrives from outside, we believe it closed and the pulse will *close* it. **Fitting a reed switch to the Shelly's SW input is the fix** — `shelly.get_status()` already surfaces `input_state` ready for it.
+- **Open security item**: the Shelly has auth disabled (`auth_en: false`), so anything on the LAN can open Garage 2 with one HTTP request. Deferred by choice 2026-09-26.
 
 ## Hardware notes — Shelly for garage doors
 - A garage opener's wall button is a dry-contact **momentary** input; the relay must *pulse* (~0.5 s), not latch. Shelly 1 / Plus 1 / 1 Mini Gen3 wired across the opener's button terminals, with the Shelly set to **auto-off after 0.5 s** ("button" mode). 12 V / 24 V / 110 V input variants exist — match the power source.

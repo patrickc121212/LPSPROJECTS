@@ -109,7 +109,8 @@ def test_api_inbox_read(auth):
 
 def test_api_door_fires_routine_and_publishes(auth, fired, events):
     r = auth.post("/api/door", json={"door_key": "garage2", "action": "open"})
-    assert r.get_json() == {"ok": True, "routine": "Open Garage 2"}
+    body = r.get_json()
+    assert body["ok"] is True and body["routine"] == "Open Garage 2"
     assert fired == ["Open Garage 2"]
     state = {d["door_key"]: d["is_open"] for d in models.all_door_states()}
     assert state["garage2"] == 1

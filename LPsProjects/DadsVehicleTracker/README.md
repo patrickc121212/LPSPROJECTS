@@ -20,9 +20,11 @@ Built per [Plan.md](Plan.md). Vehicles:
 2. **Per-vehicle messaging** — compose to one driver; in-app inbox is the
    source of truth, Twilio SMS is a fallback push if the recipient hasn't
    checked in for `SMS_FALLBACK_AFTER_S` seconds.
-3. **Manual door controls** — per-garage Open/Close buttons. Each click
-   fires a Google Assistant Routine (e.g. "Open Garage 1"); the existing
-   Shelly Cloud skill handles the relay.
+3. **Manual door controls** — per-garage Open/Close buttons. A door with
+   `GARAGE{N}_SHELLY_HOST` set is pulsed directly over the LAN (~50 ms, and
+   it works with the internet down); otherwise the click fires a Google
+   Assistant Routine. A pulse *toggles* the door, and no sensor is fitted,
+   so the state shown is what we last commanded — not a reading.
 4. **Geofence auto-open** — the Tesla poller runs every ~30s; the
    geofence worker computes haversine distance to each door's center
    and fires the door's open routine on the moment a permitted vehicle

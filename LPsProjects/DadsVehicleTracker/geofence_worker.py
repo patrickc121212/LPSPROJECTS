@@ -13,29 +13,27 @@ transition. A car parked in the garage all night therefore fires once, not
 once per debounce window. GEOFENCE_DEBOUNCE_S is a second guard against
 GPS jitter flapping a car across the fence line.
 
-We trigger the routine by POSTing to a Google Home webhook
-(GOOGLE_ROUTINE_WEBHOOK_URL). In v1 the body is just the routine name;
-you set that webhook up once in IFTTT / Google Home webhooks / a small
-App Script. The Shelly Cloud skill handles the actual relay flip.
+How a door is actually actuated (local Shelly pulse, Google Routine
+webhook, or dry-run) is door_control's job.
+
+Doors on the Shelly path are toggle-only, so firing at one that is already
+open would CLOSE it on a car pulling in. `evaluate` therefore skips any
+door we currently believe to be open — see door_control.believed_open.
 """
 from __future__ import annotations
 
-import json
 import logging
 import math
-import os
 import threading
 import time
 from typing import Any
 
 import config
+import door_control
 import models
 from eventbus import bus
 
 log = logging.getLogger("geofence_worker")
-
-WEBHOOK_URL = os.getenv("GOOGLE_ROUTINE_WEBHOOK_URL", "")
-WEBHOOK_TOKEN = os.getenv("GOOGLE_ROUTINE_WEBHOOK_TOKEN", "")
 
 # (vehicle_key, door_key) -> last fire timestamp
 _last_fire: dict[tuple[str, str], float] = {}
@@ -55,38 +53,17 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * r * math.asin(math.sqrt(a))
 
 
-def _trigger_routine(routine_name: str) -> None:
-    """POST to the Google Home webhook. No-op in dev unless the URL is set."""
-    if not WEBHOOK_URL:
-        log.info("[dry-run] would fire routine: %s", routine_name)
-        return
-    try:
-        import urllib.request
-        body = json.dumps({"routine": routine_name}).encode("utf-8")
-        req = urllib.request.Request(
-            WEBHOOK_URL,
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                **({"Authorization": f"Bearer {WEBHOOK_TOKEN}"} if WEBHOOK_TOKEN else {}),
-            },
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=4).read()
-        log.info("Fired routine: %s", routine_name)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("Routine webhook failed for %s: %s", routine_name, exc)
-
-
 def evaluate(
     states: dict[str, dict[str, Any]],
     allowlists: dict[str, set[str]],
     now: float,
+    door_states: dict[str, dict] | None = None,
 ) -> list[tuple[str, str]]:
     """Pure decision step. Returns the (vehicle_key, door_key) pairs that
     should trigger an auto-open this tick, and updates the edge/debounce
     state. Split from _tick so it can be unit-tested without SQLite."""
     fire: list[tuple[str, str]] = []
+    door_states = door_states or {}
     for door in config.GARAGE_DOORS:
         allow = allowlists.get(door.key, set())
         for v in config.VEHICLES:
@@ -110,19 +87,70 @@ def evaluate(
             last = _last_fire.get(key)
             if last is not None and now - last < config.GEOFENCE_DEBOUNCE_S:
                 continue
+            if door_control.believed_open(door.key, door_states, now):
+                # A Shelly-wired opener is toggle-only, so pulsing a door
+                # that is already up would shut it on the arriving car.
+                # The crossing is already consumed by _inside above, so the
+                # car must leave and return to arm auto-open again.
+                log.info("Skipping auto-open of %s for %s: believed already open",
+                         door.label, v.key)
+                continue
             _last_fire[key] = now
             fire.append(key)
     return fire
 
 
+def doors_to_assume_closed(
+    states: dict[str, dict[str, Any]],
+    door_states: dict[str, dict],
+    now: float,
+) -> list[str]:
+    """Doors whose stale "open" belief should be cleared.
+
+    We have no door sensor, so "open" is only ever our memory of the last
+    pulse we sent. Once the door's owner has driven back out of the
+    geofence, the door has all but certainly closed behind them — keeping
+    the belief would block their next arrival from auto-opening. Clearing
+    it on departure is what makes a quick trip out and back work.
+    """
+    out: list[str] = []
+    for door in config.GARAGE_DOORS:
+        if not door_control.believed_open(door.key, door_states, now):
+            continue
+        s = states.get(door.owner_key)
+        if not s or s.get("latitude") is None or s.get("longitude") is None:
+            continue  # no fix: leave the belief alone
+        if haversine_m(s["latitude"], s["longitude"], door.latitude, door.longitude) > door.radius_m:
+            out.append(door.key)
+    return out
+
+
 def _tick() -> None:
     states = {s["vehicle_key"]: s for s in models.all_vehicle_states()}
     allowlists = {d.key: models.get_allowlist(d.key) for d in config.GARAGE_DOORS}
-    for vehicle_key, door_key in evaluate(states, allowlists, time.time()):
+    door_states = {d["door_key"]: d for d in models.all_door_states()}
+    now = time.time()
+    changed = False
+
+    for door_key in doors_to_assume_closed(states, door_states, now):
+        log.info("Assuming %s closed: its owner has left the geofence",
+                 config.GARAGE_DOORS_BY_KEY[door_key].label)
+        models.upsert_door_state(door_key, False)
+        changed = True
+    if changed:
+        door_states = {d["door_key"]: d for d in models.all_door_states()}
+
+    for vehicle_key, door_key in evaluate(states, allowlists, now, door_states):
         door = config.GARAGE_DOORS_BY_KEY[door_key]
         log.info("Geofence enter: %s -> %s", vehicle_key, door.label)
-        _trigger_routine(door.routine_open)
-        models.upsert_door_state(door.key, True)
+        result = door_control.actuate(door, "open")
+        if result["ok"]:
+            models.upsert_door_state(door.key, True)
+            changed = True
+        else:
+            log.warning("Auto-open of %s FAILED (%s): %s",
+                        door.label, result["via"], result["detail"])
+    if changed:
         bus.publish("doors", models.all_door_states())
 
 

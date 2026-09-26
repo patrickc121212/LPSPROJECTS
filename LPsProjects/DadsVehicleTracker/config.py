@@ -61,6 +61,11 @@ class GarageDoor:
     longitude: float
     radius_m: float = 75.0  # default 75 m
     owner_key: str = ""     # vehicle key that always opens this door
+    # Local Shelly relay (Gen2+/Gen4) across the opener's button terminals.
+    # When set, we pulse it directly over the LAN and ignore the Google
+    # Routine names above. Empty = fall back to the routine webhook.
+    shelly_host: str = ""
+    shelly_channel: int = 0
 
 
 GARAGE_DOORS: list[GarageDoor] = [
@@ -70,6 +75,8 @@ GARAGE_DOORS: list[GarageDoor] = [
         routine_close=os.getenv("GARAGE1_CLOSE_ROUTINE", "Close Garage 1"),
         latitude=float(os.getenv("GARAGE1_LAT", "37.7749")),
         longitude=float(os.getenv("GARAGE1_LON", "-122.4194")),
+        shelly_host=os.getenv("GARAGE1_SHELLY_HOST", ""),
+        shelly_channel=int(os.getenv("GARAGE1_SHELLY_CHANNEL", "0")),
         owner_key=os.getenv("GARAGE1_OWNER", "mom"),    # Rosie's bay
     ),
     GarageDoor(
@@ -78,6 +85,8 @@ GARAGE_DOORS: list[GarageDoor] = [
         routine_close=os.getenv("GARAGE2_CLOSE_ROUTINE", "Close Garage 2"),
         latitude=float(os.getenv("GARAGE2_LAT", "37.7755")),
         longitude=float(os.getenv("GARAGE2_LON", "-122.4180")),
+        shelly_host=os.getenv("GARAGE2_SHELLY_HOST", ""),
+        shelly_channel=int(os.getenv("GARAGE2_SHELLY_CHANNEL", "0")),
         owner_key=os.getenv("GARAGE2_OWNER", "dad"),    # middle bay, the Cybertruck
     ),
     GarageDoor(
@@ -86,6 +95,8 @@ GARAGE_DOORS: list[GarageDoor] = [
         routine_close=os.getenv("GARAGE3_CLOSE_ROUTINE", "Close Garage 3"),
         latitude=float(os.getenv("GARAGE3_LAT", "37.7760")),
         longitude=float(os.getenv("GARAGE3_LON", "-122.4170")),
+        shelly_host=os.getenv("GARAGE3_SHELLY_HOST", ""),
+        shelly_channel=int(os.getenv("GARAGE3_SHELLY_CHANNEL", "0")),
         owner_key=os.getenv("GARAGE3_OWNER", "lp"),     # Model 3
     ),
 ]

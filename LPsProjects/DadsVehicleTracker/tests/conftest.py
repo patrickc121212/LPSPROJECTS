@@ -23,7 +23,9 @@ os.environ["APP_PASSWORD"] = "testpw"
 
 import config  # noqa: E402
 import models  # noqa: E402
+import door_control  # noqa: E402
 import geofence_worker  # noqa: E402
+import shelly  # noqa: E402
 import sms  # noqa: E402
 from eventbus import bus  # noqa: E402
 
@@ -60,9 +62,30 @@ def auth(client):
 
 @pytest.fixture
 def fired(monkeypatch):
-    """Capture routine triggers instead of hitting the webhook."""
+    """Capture door actuations instead of pulsing a relay or hitting a webhook.
+
+    Records the routine name for parity with the pre-Shelly tests.
+    """
     calls: list[str] = []
-    monkeypatch.setattr(geofence_worker, "_trigger_routine", calls.append)
+
+    def fake(door, action):
+        calls.append(door.routine_open if action == "open" else door.routine_close)
+        return {"ok": True, "via": "test", "detail": "captured"}
+
+    monkeypatch.setattr(door_control, "actuate", fake)
+    return calls
+
+
+@pytest.fixture
+def pulses(monkeypatch):
+    """Capture raw Shelly pulses: list of (host, channel)."""
+    calls: list[tuple[str, int]] = []
+
+    def fake(host, channel=0, pulse_s=0.5, timeout=4.0):
+        calls.append((host, channel))
+        return True, "pulsed"
+
+    monkeypatch.setattr(shelly, "pulse", fake)
     return calls
 
 

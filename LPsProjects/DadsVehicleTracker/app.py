@@ -42,6 +42,7 @@ from flask import (
 )
 
 import config
+import door_control
 import geofence_worker
 import models
 import sms
@@ -70,6 +71,7 @@ def create_app(start_workers: bool = True) -> Flask:
     models.init_db()
     if start_workers:
         log.info("Vehicle source: %s", config.VEHICLE_SOURCE)
+        door_control.startup_check()
         if config.VEHICLE_SOURCE == "telemetry":
             telemetry_worker.start_background()
         else:
@@ -153,6 +155,7 @@ def create_app(start_workers: bool = True) -> Flask:
             doors=config.GARAGE_DOORS,
             door_states=models.all_door_states(),
             allowlists=models.all_allowlists(),
+            toggle_doors=[d.key for d in config.GARAGE_DOORS if door_control.is_toggle(d)],
         )
 
     # --- JSON API ---------------------------------------------------------
@@ -208,11 +211,17 @@ def create_app(start_workers: bool = True) -> Flask:
         door = config.GARAGE_DOORS_BY_KEY.get(door_key)
         if door is None or action not in ("open", "close"):
             abort(400)
-        routine = door.routine_open if action == "open" else door.routine_close
-        geofence_worker._trigger_routine(routine)
-        models.upsert_door_state(door_key, action == "open")
-        bus.publish("doors", models.all_door_states())
-        return jsonify({"ok": True, "routine": routine})
+        result = door_control.actuate(door, action)
+        if result["ok"]:
+            models.upsert_door_state(door_key, action == "open")
+            bus.publish("doors", models.all_door_states())
+        return jsonify({
+            "ok": result["ok"],
+            "via": result["via"],
+            "routine": door.routine_open if action == "open" else door.routine_close,
+            "detail": result["detail"],
+            "toggle": door_control.is_toggle(door),
+        })
 
     @app.route("/api/allowlist", methods=["POST"])
     @login_required
