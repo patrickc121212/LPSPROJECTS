@@ -126,6 +126,11 @@ TESLA_REGION = os.getenv("TESLA_REGION", "na")
 # by flapping in and out within this window.
 GEOFENCE_DEBOUNCE_S = int(os.getenv("GEOFENCE_DEBOUNCE_S", "120"))
 
+# How often the geofence sweeps when nothing is arriving. It also evaluates
+# immediately on every new position (geofence_worker.request_tick), so this
+# is a heartbeat to expire stale state — not the auto-open reaction time.
+GEOFENCE_INTERVAL_S = int(os.getenv("GEOFENCE_INTERVAL_S", "30"))
+
 # SMS fallback cadence — if a driver hasn't checked in for this long,
 # the message is also pushed over Twilio SMS.
 SMS_FALLBACK_AFTER_S = int(os.getenv("SMS_FALLBACK_AFTER_S", "300"))

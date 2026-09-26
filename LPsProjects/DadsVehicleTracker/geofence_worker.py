@@ -38,6 +38,9 @@ log = logging.getLogger("geofence_worker")
 # Set by request_tick() when a fresh position lands, so the worker reacts to
 # a car arriving instead of waiting out its next scheduled sweep.
 _wake = threading.Event()
+# Set to ask the loop to exit; lets tests run the real loop without leaving
+# a daemon thread ticking against a torn-down database.
+_stop = threading.Event()
 
 # (vehicle_key, door_key) -> last fire timestamp
 _last_fire: dict[tuple[str, str], float] = {}
@@ -158,6 +161,12 @@ def _tick() -> None:
         bus.publish("doors", models.all_door_states())
 
 
+def stop() -> None:
+    """Ask the worker loop to exit after its current pass."""
+    _stop.set()
+    _wake.set()
+
+
 def request_tick() -> None:
     """Ask the worker to evaluate now. Called by whichever source supplies
     positions (telemetry flush, poller publish) so a car arriving home is
@@ -168,7 +177,7 @@ def request_tick() -> None:
 def _loop() -> None:
     log.info("Geofence worker started (event-driven, %ss heartbeat).",
              config.GEOFENCE_INTERVAL_S)
-    while True:
+    while not _stop.is_set():
         try:
             _tick()
         except Exception as exc:  # noqa: BLE001
@@ -177,6 +186,7 @@ def _loop() -> None:
         # stale belief still expires when no car is reporting.
         _wake.wait(timeout=config.GEOFENCE_INTERVAL_S)
         _wake.clear()
+    log.info("Geofence worker stopped.")
 
 
 def start_background() -> None:

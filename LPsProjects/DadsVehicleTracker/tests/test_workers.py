@@ -4,6 +4,9 @@ from __future__ import annotations
 import json
 import queue
 import sqlite3
+import time
+
+import pytest
 
 import eventbus
 import models
@@ -217,3 +220,65 @@ def test_init_db_adds_sms_sent_at_to_legacy_schema(tmp_path, monkeypatch):
     rows = models.list_inbox("lp")
     assert rows[0]["body"] == "old" and rows[0]["sms_sent_at"] is None
     models.init_db()  # idempotent
+
+
+# --- the worker threads actually run ---------------------------------------
+# These exist because a missing config attribute once killed the geofence
+# thread at startup while every _tick()-level test still passed: nothing
+# executed _loop(), so the crash was invisible until the live log was read.
+
+@pytest.fixture
+def geofence_thread():
+    """Run the real worker loop and always shut it down afterwards."""
+    import geofence_worker as gw
+    gw._stop.clear()
+    gw._wake.clear()
+    yield gw
+    gw.stop()
+    time.sleep(0.15)
+    gw._stop.clear()
+
+
+def test_geofence_worker_thread_survives_startup(caplog, geofence_thread):
+    import logging
+    import threading
+    gw = geofence_thread
+    caplog.set_level(logging.INFO)
+    before = {t.name for t in threading.enumerate()}
+    gw.start_background()
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        alive = [t for t in threading.enumerate()
+                 if t.name == "geofence-worker" and t.is_alive()]
+        if alive and any("Geofence worker started" in r.message for r in caplog.records):
+            break
+        time.sleep(0.05)
+    alive = [t for t in threading.enumerate() if t.name == "geofence-worker" and t.is_alive()]
+    assert alive, "geofence worker thread died on startup"
+    assert any("Geofence worker started" in r.message for r in caplog.records)
+    assert "geofence-worker" not in before
+
+
+def test_geofence_loop_reacts_to_request_tick(monkeypatch, geofence_thread):
+    """The loop must wake on request_tick rather than sleeping out its
+    heartbeat — that wait was the bulk of the auto-open delay."""
+    import threading
+    import config
+    gw = geofence_thread
+    ticks = threading.Semaphore(0)
+    monkeypatch.setattr(gw, "_tick", lambda: ticks.release())
+    monkeypatch.setattr(config, "GEOFENCE_INTERVAL_S", 3600)  # heartbeat must not save us
+    gw._wake.clear()
+    threading.Thread(target=gw._loop, name="geofence-test", daemon=True).start()
+    assert ticks.acquire(timeout=2), "no initial tick"
+    gw.request_tick()
+    assert ticks.acquire(timeout=2), "loop did not wake on request_tick"
+
+
+def test_every_config_attribute_the_workers_use_exists():
+    """Cheap guard against the exact failure above: name the settings the
+    background loops read, and fail loudly if one goes missing."""
+    import config
+    for name in ("GEOFENCE_INTERVAL_S", "GEOFENCE_DEBOUNCE_S", "TESLA_POLL_INTERVAL_S",
+                 "SMS_FALLBACK_AFTER_S", "VEHICLE_SOURCE", "TESLA_REGION", "DB_PATH"):
+        assert hasattr(config, name), f"config.{name} is missing"
