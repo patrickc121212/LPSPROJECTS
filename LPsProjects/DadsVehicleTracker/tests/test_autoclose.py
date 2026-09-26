@@ -521,3 +521,82 @@ def test_tick_opens_on_buckle_end_to_end(pulses, monkeypatch, depart_open):
     assert {x["door_key"]: x["is_open"] for x in models.all_door_states()}[d.key] == 1
     gw._tick()
     assert len(pulses) == 1, "must not keep pulsing while belted"
+
+
+# --- the bug: two pulses close together stop a moving door -------------------
+
+def test_close_cannot_follow_an_open_within_the_cooldown(monkeypatch):
+    """The real incident: buckling opened the door, then the parked-close
+    rule fired four seconds later. An opener reads the second pulse as STOP,
+    so the door halted half open."""
+    monkeypatch.setattr(config, "DEPART_OPEN_ENABLED", True)
+    monkeypatch.setattr(config, "PARKED_CLOSE_ENABLED", True)
+    monkeypatch.setattr(config, "PARKED_DWELL_S", 30)
+    monkeypatch.setattr(door_control, "DOOR_OPEN_TTL_S", 3600)
+    d = owned_by("dad")
+    now = 1_000_000.0
+
+    # Car has been parked for ages, so the dwell clock is long satisfied.
+    parked = {"dad": {**at(d, 3), "seatbelt": "Unlatched"}}
+    gw.doors_to_close_after_parking(parked, _shut(d, now), now - 5000)
+    gw.doors_to_close_after_parking(parked, _shut(d, now), now)
+
+    # Buckle up: the door opens.
+    belted = {"dad": {**at(d, 3), "seatbelt": "Latched"}}
+    assert gw.doors_to_open_for_departure(belted, _shut(d, now), now) == [d.key]
+    door_control.record_action(d.key, now)
+
+    # Belt reads unlatched a moment later — which is what happened — so the
+    # suppression lifts. The cooldown must still hold the close off.
+    open_now = _open_state(d, now)
+    assert gw.doors_to_close_after_parking(parked, open_now, now + 4) == []
+    assert gw.doors_to_close_after_parking(parked, open_now, now + 30) == []
+
+
+def test_departure_open_restarts_the_dwell_clock(monkeypatch):
+    """Belt-open must reset the parked timer, so the close has to earn its
+    30 seconds afresh rather than firing the instant suppression lifts."""
+    monkeypatch.setattr(config, "DEPART_OPEN_ENABLED", True)
+    monkeypatch.setattr(config, "PARKED_CLOSE_ENABLED", True)
+    monkeypatch.setattr(door_control, "DOOR_OPEN_TTL_S", 3600)
+    d = owned_by("dad")
+    now = 1_000_000.0
+    parked = {"dad": {**at(d, 3), "seatbelt": "Unlatched"}}
+    gw.doors_to_close_after_parking(parked, _shut(d, now), now - 5000)
+    assert gw.stationary_seconds("dad", *_ll(at(d, 3)), now) > config.PARKED_DWELL_S
+
+    belted = {"dad": {**at(d, 3), "seatbelt": "Latched"}}
+    gw.doors_to_open_for_departure(belted, _shut(d, now), now)
+    assert gw.stationary_seconds("dad", *_ll(at(d, 3)), now) == 0.0
+
+
+def test_manual_press_also_holds_off_the_automatic_rules(auth, monkeypatch, pulses):
+    """Someone opening the door by hand must not have it closed from under
+    them seconds later."""
+    monkeypatch.setattr(config, "AUTO_CLOSE_ENABLED", True)
+    monkeypatch.setattr(config, "AUTO_CLOSE_DELAY_S", 0)
+    d = replace(owned_by("dad"), shelly_host="10.0.0.9", close_radius_m=20.0)
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    monkeypatch.setattr(config, "GARAGE_DOORS_BY_KEY", {d.key: d})
+    auth.post("/api/door", json={"door_key": d.key, "action": "open"})
+    assert len(pulses) == 1
+    models.upsert_vehicle_state("dad", at(d, 500)["latitude"], d.longitude, 30, 80, True)
+    gw._tick()
+    assert len(pulses) == 1, "auto-close must respect a manual press"
+
+
+def test_cooldown_expires():
+    door_control.record_action("garage2", 1000.0)
+    assert door_control.in_cooldown("garage2", 1000.0 + config.DOOR_ACTION_COOLDOWN_S - 1)
+    assert not door_control.in_cooldown("garage2", 1000.0 + config.DOOR_ACTION_COOLDOWN_S + 1)
+
+
+def test_cooldown_ignores_a_backwards_clock():
+    """A clock that jumps back must not freeze every automatic rule."""
+    door_control.record_action("garage2", 2_000_000.0)
+    assert door_control.in_cooldown("garage2", 1_000_000.0) is False
+
+
+def test_no_cooldown_for_a_door_never_commanded():
+    assert door_control.in_cooldown("garage9", 1000.0) is False
+    assert door_control.seconds_since_action("garage9", 1000.0) is None

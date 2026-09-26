@@ -36,6 +36,7 @@ for _k, _v in {
     "PARKED_JITTER_M": "8",
     "DEPART_OPEN_ENABLED": "0",
     "DEPART_OPEN_RADIUS_M": "25",
+    "DOOR_ACTION_COOLDOWN_S": "60",
     "TRIP_IDLE_END_S": "180",
     "TRIP_MIN_DISTANCE_MI": "0.2",
     "HISTORY_MIN_MOVE_M": "10",
@@ -79,6 +80,7 @@ def fresh_db(tmp_path, monkeypatch):
     _trips._last_point.clear()
     _trips._last_prune = 0.0
     door_control._sensor_cache.clear()
+    door_control._last_action.clear()
     yield db_file
 
 

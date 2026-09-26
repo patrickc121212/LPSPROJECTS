@@ -109,6 +109,10 @@ def evaluate(
             last = _last_fire.get(key)
             if last is not None and now - last < config.GEOFENCE_DEBOUNCE_S:
                 continue
+            if door_control.in_cooldown(door.key, now):
+                log.info("Skipping auto-open of %s: commanded %.0fs ago", door.label,
+                         door_control.seconds_since_action(door.key, now) or 0)
+                continue
             if door_control.is_open(door, door_states, now):
                 # A Shelly-wired opener is toggle-only, so pulsing a door
                 # that is already up would shut it on the arriving car.
@@ -179,9 +183,17 @@ def doors_to_open_for_departure(
             continue
         if door.key in _depart_opened:
             continue
+        if door_control.in_cooldown(door.key, now):
+            continue
         if door_control.is_open(door, door_states, now):
             continue
         _depart_opened.add(door.key)
+        # Restart the dwell clock. Otherwise the parked-close rule, whose
+        # timer has been running since the car arrived, fires the instant
+        # anything lifts its seatbelt suppression — which is exactly how a
+        # door once opened and then stopped four seconds later.
+        _still_ref.pop(door.owner_key, None)
+        _parked_closed.discard(door.key)
         out.append(door.key)
     return out
 
@@ -217,6 +229,8 @@ def doors_to_close_after_parking(
             _parked_closed.discard(door.key)
             continue
         if door.key in _parked_closed:
+            continue
+        if door_control.in_cooldown(door.key, now):
             continue
         if not door_control.is_open(door, door_states, now):
             continue
@@ -255,6 +269,8 @@ def departure_actions(
             to_assume.append(door.key)
             continue
         if door.key in _auto_closed:
+            continue
+        if door_control.in_cooldown(door.key, now):
             continue
         if away_s >= config.AUTO_CLOSE_DELAY_S:
             # Mark here, not at the call site: one attempt per departure

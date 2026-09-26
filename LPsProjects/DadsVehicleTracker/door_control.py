@@ -63,12 +63,45 @@ def _fire_routine(routine_name: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
+# door_key -> when it was last commanded, by any path.
+_last_action: dict[str, float] = {}
+
+
+def record_action(door_key: str, now: float | None = None) -> None:
+    _last_action[door_key] = time.time() if now is None else now
+
+
+def seconds_since_action(door_key: str, now: float | None = None) -> float | None:
+    last = _last_action.get(door_key)
+    if last is None:
+        return None
+    return (time.time() if now is None else now) - last
+
+
+def in_cooldown(door_key: str, now: float | None = None) -> bool:
+    """Was this door commanded too recently for another automatic pulse?
+
+    A negative interval means the stored time is ahead of `now` — a clock
+    that jumped backwards, say. Treat that as "not recently", so a bad clock
+    cannot freeze every automatic rule indefinitely.
+    """
+    since = seconds_since_action(door_key, now)
+    if since is None or since < 0:
+        return False
+    return since < config.DOOR_ACTION_COOLDOWN_S
+
+
 def actuate(door: config.GarageDoor, action: str) -> dict:
     """Open or close one door by whatever means that door has.
 
     Returns {"ok", "via", "detail"}. On the Shelly path `action` only
     affects the state we record — the pulse itself is identical.
     """
+    # Recorded for every path, manual included: a button press must also
+    # hold off the automatic rules, or an auto-close can cut short a door
+    # someone just opened by hand.
+    record_action(door.key)
+
     if door.shelly_host:
         ok, detail = shelly.pulse(door.shelly_host, door.shelly_channel)
         return {"ok": ok, "via": "shelly", "detail": detail}

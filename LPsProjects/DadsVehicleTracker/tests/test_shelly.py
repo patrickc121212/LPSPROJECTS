@@ -293,6 +293,10 @@ def test_quick_trip_out_and_back_reopens(pulses, monkeypatch):
     monkeypatch.setattr(config, "GARAGE_DOORS_BY_KEY", {d.key: d})
     monkeypatch.setattr(config, "GEOFENCE_DEBOUNCE_S", 0)
 
+    base = time.time()
+    clock = {"t": base}
+    monkeypatch.setattr(gw.time, "time", lambda: clock["t"])
+
     def put(offset_m):
         models.upsert_vehicle_state("dad", at(d, offset_m)["latitude"], d.longitude, 20, 80, True)
 
@@ -300,8 +304,12 @@ def test_quick_trip_out_and_back_reopens(pulses, monkeypatch):
     put(5);   gw._tick()           # arrive -> pulse
     assert len(pulses) == 1
     assert {x["door_key"]: x["is_open"] for x in models.all_door_states()}[d.key] == 1
+    # Past the 60 s action cooldown, but well inside DOOR_OPEN_TTL_S so the
+    # "open" belief is still live and there is something to clear.
+    clock["t"] = base + 120
     put(500); gw._tick()           # leave -> belief cleared
     assert {x["door_key"]: x["is_open"] for x in models.all_door_states()}[d.key] == 0
+    clock["t"] = base + 240
     put(5);   gw._tick()           # arrive again -> pulses again
     assert len(pulses) == 2
 

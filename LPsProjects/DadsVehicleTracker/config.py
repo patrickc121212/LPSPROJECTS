@@ -156,6 +156,14 @@ GEOFENCE_INTERVAL_S = int(os.getenv("GEOFENCE_INTERVAL_S", "30"))
 # belief means the pulse OPENS the door at an empty house — enabled by
 # explicit choice 2026-09-26. The delay avoids firing while the driver is
 # still on the property, and gives a sensor (once fitted) a settled reading.
+# No automatic pulse within this long of the last time the door was
+# commanded, by anything — including a button press. An opener treats a
+# second press mid-travel as STOP, so two pulses close together leave the
+# door stuck half open. A door takes 12-15 s to travel; this covers that
+# with margin. Manual presses are never suppressed: a person pressing the
+# button is a deliberate act.
+DOOR_ACTION_COOLDOWN_S = int(os.getenv("DOOR_ACTION_COOLDOWN_S", "60"))
+
 AUTO_CLOSE_ENABLED = os.getenv("AUTO_CLOSE_ENABLED", "0") == "1"
 AUTO_CLOSE_DELAY_S = int(os.getenv("AUTO_CLOSE_DELAY_S", "180"))
 
