@@ -1,3 +1,5 @@
 certs/
 cloudflare.ini
 .env
+
+renew.log

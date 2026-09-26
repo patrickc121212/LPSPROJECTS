@@ -65,6 +65,12 @@ schtasks /End  /TN "Dads Vehicle Tracker"    # stop (supervisor tears the app do
 Get-Content datapp.log -Tail 50 -Wait      # follow the log
 ```
 
+The task runs as **S4U** (whether logged on or not) with at-startup *and*
+at-logon triggers, so the app returns ~1 min after a reboot. A second task,
+**"Dads Vehicle Tracker - cert renewal"**, runs `telemetry/renew_cert.py`
+every Monday 04:00: `certbot renew` (a no-op outside the 30-day window) and
+a receiver restart only if a new cert actually landed.
+
 Requirements for it to stay reachable: PC set to never sleep on AC
 (`powercfg /change standby-timeout-ac 0`), Docker Desktop set to start at
 sign-in, and the user logged in (the task is an at-logon task). To make the
