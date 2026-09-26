@@ -22,6 +22,7 @@ import time
 from typing import Any
 
 import config
+import geofence_worker
 import models
 from eventbus import bus
 
@@ -214,6 +215,7 @@ def _publish(states: list[dict[str, Any]]) -> None:
     # Always publish the full snapshot so a fresh client gets everything.
     full = models.all_vehicle_states()
     bus.publish("vehicles", full)
+    geofence_worker.request_tick()
 
 
 MAX_BACKOFF = 16.0  # multiplier on TESLA_POLL_INTERVAL_S (30s * 16 = 8 min)

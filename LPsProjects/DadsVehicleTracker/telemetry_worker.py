@@ -24,6 +24,7 @@ import time
 from typing import Any
 
 import config
+import geofence_worker
 import models
 from eventbus import bus
 
@@ -155,6 +156,9 @@ def _flusher() -> None:
         _dirty.clear()
         try:
             flush()
+            # Evaluate geofences against the position we just stored rather
+            # than leaving it for the worker's next heartbeat.
+            geofence_worker.request_tick()
         except Exception as exc:  # noqa: BLE001
             log.exception("telemetry flush failed: %s", exc)
 
