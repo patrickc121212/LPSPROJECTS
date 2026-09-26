@@ -424,3 +424,100 @@ def test_no_overlap_warning_when_parked_zone_is_inside(monkeypatch):
     d = replace(owned_by("dad"), close_radius_m=20.0)
     monkeypatch.setattr(config, "GARAGE_DOORS", [d])
     assert door_control.config_warnings() == []
+
+
+# --- open when the driver buckles up ---------------------------------------
+
+@pytest.fixture
+def depart_open(monkeypatch):
+    monkeypatch.setattr(config, "DEPART_OPEN_ENABLED", True)
+    monkeypatch.setattr(config, "DEPART_OPEN_RADIUS_M", 25.0)
+    monkeypatch.setattr(door_control, "DOOR_OPEN_TTL_S", 3600)
+    return config
+
+
+def _belted(door, offset_m=3, belt="Latched"):
+    p = at(door, offset_m)
+    return {"dad": {**p, "seatbelt": belt}}
+
+
+def _shut(door, now):
+    return {door.key: {"door_key": door.key, "is_open": 0, "updated_at": now}}
+
+
+def test_buckling_at_the_garage_opens_the_door(depart_open):
+    d = owned_by("dad")
+    now = 1_000_000.0
+    assert gw.doors_to_open_for_departure(_belted(d), _shut(d, now), now) == [d.key]
+
+
+def test_unbuckled_does_not_open(depart_open):
+    d = owned_by("dad")
+    now = 1_000_000.0
+    assert gw.doors_to_open_for_departure(_belted(d, belt="Unlatched"), _shut(d, now), now) == []
+    assert gw.doors_to_open_for_departure(_belted(d, belt=None), _shut(d, now), now) == []
+
+
+def test_buckling_far_from_the_garage_does_nothing(depart_open):
+    """Belted in on the motorway must not open the door at home."""
+    d = owned_by("dad")
+    now = 1_000_000.0
+    assert gw.doors_to_open_for_departure(_belted(d, offset_m=400), _shut(d, now), now) == []
+
+
+def test_already_open_door_is_not_re_pulsed(depart_open):
+    d = owned_by("dad")
+    now = 1_000_000.0
+    open_now = _open_state(d, now)
+    assert gw.doors_to_open_for_departure(_belted(d), open_now, now) == []
+
+
+def test_one_open_per_buckle(depart_open):
+    d = owned_by("dad")
+    now = 1_000_000.0
+    shut = _shut(d, now)
+    assert gw.doors_to_open_for_departure(_belted(d), shut, now) == [d.key]
+    assert gw.doors_to_open_for_departure(_belted(d), shut, now + 5) == []
+    # Unbuckling re-arms it.
+    gw.doors_to_open_for_departure(_belted(d, belt="Unlatched"), shut, now + 10)
+    assert gw.doors_to_open_for_departure(_belted(d), shut, now + 20) == [d.key]
+
+
+def test_buckled_suppresses_the_parked_close(depart_open, parked_close):
+    """Otherwise the door would open on buckle, then the dwell timer would
+    shut it again while the driver sits there belted in."""
+    d = owned_by("dad")
+    now = 1_000_000.0
+    open_now = _open_state(d, now)
+    belted = _belted(d)
+    gw.doors_to_close_after_parking(belted, open_now, now)
+    assert gw.doors_to_close_after_parking(belted, open_now, now + 600) == []
+    # Unbuckle and the dwell rule takes over again.
+    unbuckled = _belted(d, belt="Unlatched")
+    gw.doors_to_close_after_parking(unbuckled, open_now, now + 601)
+    assert gw.doors_to_close_after_parking(unbuckled, open_now, now + 640) == [d.key]
+
+
+def test_depart_open_disabled_by_default():
+    d = owned_by("dad")
+    models.upsert_door_state(d.key, False)
+    models.upsert_vehicle_state("dad", *_ll(at(d, 3)), 0, 80, True, seatbelt="Latched")
+    assert config.DEPART_OPEN_ENABLED is False
+    gw._tick()
+    assert {x["door_key"]: x["is_open"] for x in models.all_door_states()}[d.key] == 0
+
+
+def test_tick_opens_on_buckle_end_to_end(pulses, monkeypatch, depart_open):
+    d = replace(owned_by("dad"), shelly_host="10.0.0.9")
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    monkeypatch.setattr(config, "GARAGE_DOORS_BY_KEY", {d.key: d})
+    models.upsert_door_state(d.key, False)
+    models.upsert_vehicle_state("dad", *_ll(at(d, 3)), 0, 80, True, seatbelt="Unlatched")
+    gw._tick()
+    assert pulses == []
+    models.upsert_vehicle_state("dad", *_ll(at(d, 3)), 0, 80, True, seatbelt="Latched")
+    gw._tick()
+    assert pulses == [("10.0.0.9", 0)]
+    assert {x["door_key"]: x["is_open"] for x in models.all_door_states()}[d.key] == 1
+    gw._tick()
+    assert len(pulses) == 1, "must not keep pulsing while belted"

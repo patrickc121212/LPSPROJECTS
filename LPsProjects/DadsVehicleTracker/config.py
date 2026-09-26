@@ -174,6 +174,12 @@ PARKED_RADIUS_M = float(os.getenv("PARKED_RADIUS_M", "25"))
 # already exceeds this.
 PARKED_JITTER_M = float(os.getenv("PARKED_JITTER_M", "8"))
 
+# Open the door when the owner buckles up at the garage — the earliest
+# unambiguous "about to drive off" signal the cars report. A spurious open
+# self-corrects: unbuckle and the parked-close rule shuts it again.
+DEPART_OPEN_ENABLED = os.getenv("DEPART_OPEN_ENABLED", "0") == "1"
+DEPART_OPEN_RADIUS_M = float(os.getenv("DEPART_OPEN_RADIUS_M", "25"))
+
 # SMS fallback cadence — if a driver hasn't checked in for this long,
 # the message is also pushed over Twilio SMS.
 SMS_FALLBACK_AFTER_S = int(os.getenv("SMS_FALLBACK_AFTER_S", "300"))

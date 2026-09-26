@@ -65,6 +65,25 @@ def _num(v: Any) -> float | None:
     return None
 
 
+def _buckle(v: Any) -> str | None:
+    """Normalise the seatbelt signal to "Latched" / "Unlatched" / None.
+
+    The proto declares a BuckleStatus enum, but the cars observed here send a
+    plain JSON boolean — so handle both rather than trusting either.
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return "Latched" if v else "Unlatched"
+    text = str(v).replace("BuckleStatus", "").strip()
+    low = text.lower()
+    if low in ("true", "latched", "buckled"):
+        return "Latched"
+    if low in ("false", "unlatched", "unbuckled"):
+        return "Unlatched"
+    return text or None  # Unknown / Faulted: stored, but never counts as latched
+
+
 def _location(v: Any) -> tuple[float | None, float | None]:
     if isinstance(v, dict):
         inner = v.get("locationValue", v)
@@ -95,6 +114,8 @@ def apply_signal(vehicle_key: str, field: str, value: Any) -> dict[str, Any]:
                 row["speed_mph"] = 0.0
         elif field == "DetailedChargeState":
             row["charge_state"] = str(value).replace("DetailedChargeState", "") if value is not None else None
+        elif field == "DriverSeatBelt":
+            row["seatbelt"] = _buckle(value)
         elif field == "VehicleName":
             row["name"] = str(value)
         row["updated_at"] = time.time()
@@ -145,6 +166,7 @@ def flush() -> None:
             r.get("latitude"), r.get("longitude"),
             r.get("speed_mph"), r.get("battery_pct"),
             bool(r.get("online", False)),
+            seatbelt=r.get("seatbelt"),
         )
     bus.publish("vehicles", models.all_vehicle_states())
 

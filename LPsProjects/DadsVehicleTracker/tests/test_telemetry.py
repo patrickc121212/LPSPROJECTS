@@ -151,3 +151,35 @@ def test_flush_wakes_the_geofence_worker(monkeypatch):
     tw.flush()
     gw.request_tick()
     assert gw._wake.is_set()
+
+
+def test_seatbelt_accepts_boolean_and_enum_encodings():
+    """The proto declares a BuckleStatus enum but real cars send a JSON
+    boolean; a mismatch here silently disables buckle-to-open."""
+    for raw, expected in [
+        (True, "Latched"), (False, "Unlatched"),
+        ("BuckleStatusLatched", "Latched"), ("BuckleStatusUnlatched", "Unlatched"),
+        ("true", "Latched"), ("false", "Unlatched"),
+        (None, None),
+    ]:
+        assert tw._buckle(raw) == expected, raw
+    # Anything unexpected is kept but must not read as latched.
+    assert tw._buckle("BuckleStatusFaulted") == "Faulted"
+
+
+def test_seatbelt_signal_reaches_the_db(events):
+    _msg("VIN_DAD", "DriverSeatBelt", True)
+    assert tw._state["dad"]["seatbelt"] == "Latched"
+    tw.flush()
+    row = {r["vehicle_key"]: r for r in models.all_vehicle_states()}["dad"]
+    assert row["seatbelt"] == "Latched"
+
+
+def test_seatbelt_is_not_wiped_by_a_source_that_omits_it():
+    """The poller doesn't report seatbelt; it must not null out what
+    telemetry stored."""
+    _msg("VIN_DAD", "DriverSeatBelt", True)
+    tw.flush()
+    models.upsert_vehicle_state("dad", 1.0, 2.0, 0, 80, True)   # no seatbelt kwarg
+    row = {r["vehicle_key"]: r for r in models.all_vehicle_states()}["dad"]
+    assert row["seatbelt"] == "Latched"

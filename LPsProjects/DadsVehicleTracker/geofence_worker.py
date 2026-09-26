@@ -53,6 +53,9 @@ _auto_closed: set[str] = set()
 _still_ref: dict[str, tuple[float, float, float]] = {}
 # Doors closed because the owner parked; cleared when the car moves again.
 _parked_closed: set[str] = set()
+# Doors opened because the owner buckled up; cleared when they unbuckle or
+# drive away, so one buckle produces one open.
+_depart_opened: set[str] = set()
 
 # (vehicle_key, door_key) -> last fire timestamp
 _last_fire: dict[tuple[str, str], float] = {}
@@ -149,6 +152,40 @@ def stationary_seconds(vehicle_key: str, lat: float, lon: float, now: float) -> 
     return max(0.0, now - ref[2])
 
 
+def _buckled(state: dict[str, Any] | None) -> bool:
+    return bool(state) and str(state.get("seatbelt") or "") == "Latched"
+
+
+def doors_to_open_for_departure(
+    states: dict[str, dict[str, Any]],
+    door_states: dict[str, dict],
+    now: float,
+) -> list[str]:
+    """Doors to open because their owner has buckled up at the garage.
+
+    Buckling is the earliest signal that is unambiguous about intent — a
+    driver in the seat might just be fetching something, but nobody belts in
+    without leaving. It gives roughly the time a door needs to travel.
+    """
+    out: list[str] = []
+    for door in config.GARAGE_DOORS:
+        s = states.get(door.owner_key)
+        if not s or s.get("latitude") is None or s.get("longitude") is None:
+            continue
+        at_garage = haversine_m(s["latitude"], s["longitude"],
+                                door.latitude, door.longitude) <= config.DEPART_OPEN_RADIUS_M
+        if not (at_garage and _buckled(s)):
+            _depart_opened.discard(door.key)  # re-arm for the next buckle
+            continue
+        if door.key in _depart_opened:
+            continue
+        if door_control.is_open(door, door_states, now):
+            continue
+        _depart_opened.add(door.key)
+        out.append(door.key)
+    return out
+
+
 def doors_to_close_after_parking(
     states: dict[str, dict[str, Any]],
     door_states: dict[str, dict],
@@ -164,6 +201,11 @@ def doors_to_close_after_parking(
     for door in config.GARAGE_DOORS:
         s = states.get(door.owner_key)
         if not s or s.get("latitude") is None or s.get("longitude") is None:
+            continue
+        if _buckled(s):
+            # Belted in and sitting still: they are about to drive off, not
+            # done for the day. Closing here would fight the departure-open
+            # rule and shut the door on them.
             continue
         still_s = stationary_seconds(door.owner_key, s["latitude"], s["longitude"], now)
         at_garage = haversine_m(s["latitude"], s["longitude"],
@@ -256,6 +298,20 @@ def _tick() -> None:
 
     if changed:
         door_states = {d["door_key"]: d for d in models.all_door_states()}
+
+    if config.DEPART_OPEN_ENABLED:
+        for door_key in doors_to_open_for_departure(states, door_states, now):
+            door = config.GARAGE_DOORS_BY_KEY[door_key]
+            log.info("Opening %s: %s buckled up at the garage", door.label, door.owner_key)
+            result = door_control.actuate(door, "open")
+            if result["ok"]:
+                models.upsert_door_state(door_key, True)
+                changed = True
+            else:
+                log.warning("Departure-open of %s FAILED (%s): %s",
+                            door.label, result["via"], result["detail"])
+        if changed:
+            door_states = {d["door_key"]: d for d in models.all_door_states()}
 
     for vehicle_key, door_key in evaluate(states, allowlists, now, door_states):
         door = config.GARAGE_DOORS_BY_KEY[door_key]

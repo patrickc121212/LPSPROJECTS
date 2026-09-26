@@ -306,6 +306,9 @@ def telemetry_fields() -> dict:
         "Gear":                {"interval_seconds": 10},
         "BatteryLevel":        {"interval_seconds": 60},
         "DetailedChargeState": {"interval_seconds": 60},
+        # Buckling up is our "about to drive off" cue, so report it promptly.
+        # It only transmits on change, so the cost is a couple of events a day.
+        "DriverSeatBelt":      {"interval_seconds": 1},
         "VehicleName":         {"interval_seconds": 3600},
     }
 
