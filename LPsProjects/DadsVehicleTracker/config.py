@@ -66,6 +66,13 @@ class GarageDoor:
     # Routine names above. Empty = fall back to the routine webhook.
     shelly_host: str = ""
     shelly_channel: int = 0
+    # Door-position sensor on the Shelly (reed switch). Empty = no sensor,
+    # in which case door state is only ever our memory of the last pulse.
+    # Holds the input id as a string, e.g. "0" for the built-in SW terminal
+    # or "100" for an Add-on input. Contact closed (magnet present) means
+    # the door is CLOSED unless sensor_invert flips it.
+    sensor_input: str = ""
+    sensor_invert: bool = False
 
 
 GARAGE_DOORS: list[GarageDoor] = [
@@ -77,6 +84,8 @@ GARAGE_DOORS: list[GarageDoor] = [
         longitude=float(os.getenv("GARAGE1_LON", "-122.4194")),
         radius_m=float(os.getenv("GARAGE1_RADIUS_M", "75")),
         shelly_host=os.getenv("GARAGE1_SHELLY_HOST", ""),
+        sensor_input=os.getenv("GARAGE1_SENSOR_INPUT", ""),
+        sensor_invert=os.getenv("GARAGE1_SENSOR_INVERT", "0") == "1",
         shelly_channel=int(os.getenv("GARAGE1_SHELLY_CHANNEL", "0")),
         owner_key=os.getenv("GARAGE1_OWNER", "mom"),    # Rosie's bay
     ),
@@ -88,6 +97,8 @@ GARAGE_DOORS: list[GarageDoor] = [
         longitude=float(os.getenv("GARAGE2_LON", "-122.4180")),
         radius_m=float(os.getenv("GARAGE2_RADIUS_M", "75")),
         shelly_host=os.getenv("GARAGE2_SHELLY_HOST", ""),
+        sensor_input=os.getenv("GARAGE2_SENSOR_INPUT", ""),
+        sensor_invert=os.getenv("GARAGE2_SENSOR_INVERT", "0") == "1",
         shelly_channel=int(os.getenv("GARAGE2_SHELLY_CHANNEL", "0")),
         owner_key=os.getenv("GARAGE2_OWNER", "dad"),    # middle bay, the Cybertruck
     ),
@@ -99,6 +110,8 @@ GARAGE_DOORS: list[GarageDoor] = [
         longitude=float(os.getenv("GARAGE3_LON", "-122.4170")),
         radius_m=float(os.getenv("GARAGE3_RADIUS_M", "75")),
         shelly_host=os.getenv("GARAGE3_SHELLY_HOST", ""),
+        sensor_input=os.getenv("GARAGE3_SENSOR_INPUT", ""),
+        sensor_invert=os.getenv("GARAGE3_SENSOR_INVERT", "0") == "1",
         shelly_channel=int(os.getenv("GARAGE3_SHELLY_CHANNEL", "0")),
         owner_key=os.getenv("GARAGE3_OWNER", "lp"),     # Model 3
     ),
@@ -130,6 +143,14 @@ GEOFENCE_DEBOUNCE_S = int(os.getenv("GEOFENCE_DEBOUNCE_S", "120"))
 # immediately on every new position (geofence_worker.request_tick), so this
 # is a heartbeat to expire stale state — not the auto-open reaction time.
 GEOFENCE_INTERVAL_S = int(os.getenv("GEOFENCE_INTERVAL_S", "30"))
+
+# Close a door automatically once its owner has driven away. Without a
+# position sensor this acts on a BELIEF about the door's state, and a wrong
+# belief means the pulse OPENS the door at an empty house — enabled by
+# explicit choice 2026-09-26. The delay avoids firing while the driver is
+# still on the property, and gives a sensor (once fitted) a settled reading.
+AUTO_CLOSE_ENABLED = os.getenv("AUTO_CLOSE_ENABLED", "0") == "1"
+AUTO_CLOSE_DELAY_S = int(os.getenv("AUTO_CLOSE_DELAY_S", "180"))
 
 # SMS fallback cadence — if a driver hasn't checked in for this long,
 # the message is also pushed over Twilio SMS.

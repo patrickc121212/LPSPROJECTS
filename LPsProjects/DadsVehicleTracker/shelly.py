@@ -100,6 +100,21 @@ def get_status(host: str, channel: int = 0,
     }
 
 
+def get_input_state(host: str, input_id: int = 0,
+                    timeout: float = DEFAULT_TIMEOUT_S) -> bool | None:
+    """Raw state of one input, or None if unreachable / not reporting.
+
+    NOTE an unconnected `switch`-type input reads False, which is
+    indistinguishable from a genuine open contact. Only call this for doors
+    whose sensor is actually wired (GARAGE{N}_SENSOR_INPUT set).
+    """
+    ok, payload = _rpc(host, "Input.GetStatus", {"id": input_id}, timeout)
+    if not ok or not isinstance(payload, dict):
+        return None
+    st = payload.get("state")
+    return None if st is None else bool(st)
+
+
 def check_pulse_config(host: str, channel: int = 0,
                        timeout: float = DEFAULT_TIMEOUT_S) -> tuple[bool, str]:
     """Startup sanity check: would a pulse behave like a button press?

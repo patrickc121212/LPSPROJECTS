@@ -1,0 +1,259 @@
+"""Auto-close on departure, and the position sensor that makes it safe.
+
+Auto-close is off by default; these tests turn it on explicitly so the
+default path stays covered by the rest of the suite.
+"""
+from __future__ import annotations
+
+from dataclasses import replace
+
+import pytest
+
+import time as _time
+
+import config
+import door_control
+import geofence_worker as gw
+import models
+import shelly
+from conftest import at, owned_by
+
+
+@pytest.fixture
+def auto_close(monkeypatch):
+    monkeypatch.setattr(config, "AUTO_CLOSE_ENABLED", True)
+    monkeypatch.setattr(config, "AUTO_CLOSE_DELAY_S", 180)
+    # Keep the belief alive across these scenarios; the TTL interaction has
+    # its own tests below.
+    monkeypatch.setattr(door_control, "DOOR_OPEN_TTL_S", 3600)
+    return config
+
+
+def _advance(monkeypatch, seconds):
+    """Jump the worker's clock forward. Capture the real function first —
+    gw.time is the time module itself, so a lambda calling time.time()
+    after patching would call itself."""
+    frozen = _time.time() + seconds
+    monkeypatch.setattr(gw.time, "time", lambda: frozen)
+
+
+def _open_state(door, now, age=0.0):
+    return {door.key: {"door_key": door.key, "is_open": 1, "updated_at": now - age}}
+
+
+# --- timing -----------------------------------------------------------------
+
+def test_no_close_until_the_delay_has_elapsed(auto_close):
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    assert gw.departure_actions({"dad": at(d, 500)}, st, now)[0] == []
+    assert gw.departure_actions({"dad": at(d, 500)}, st, now + 179)[0] == []
+    assert gw.departure_actions({"dad": at(d, 500)}, st, now + 181)[0] == [d.key]
+
+
+def test_away_timer_resets_when_the_owner_returns(auto_close):
+    """Backing out and pulling straight back in must not bank away-time."""
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    gw.departure_actions({"dad": at(d, 500)}, st, now)
+    gw.departure_actions({"dad": at(d, 5)}, st, now + 100)     # came back
+    assert gw.departure_actions({"dad": at(d, 500)}, st, now + 120)[0] == []
+    assert gw.departure_actions({"dad": at(d, 500)}, st, now + 290)[0] == []
+    assert gw.departure_actions({"dad": at(d, 500)}, st, now + 310)[0] == [d.key]
+
+
+def test_only_one_close_attempt_per_departure(auto_close):
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    gw.departure_actions({"dad": at(d, 500)}, st, now)
+    assert gw.departure_actions({"dad": at(d, 500)}, st, now + 200)[0] == [d.key]
+    assert gw.departure_actions({"dad": at(d, 500)}, st, now + 400)[0] == []
+    # Coming home and leaving again arms it once more.
+    gw.departure_actions({"dad": at(d, 5)}, st, now + 500)
+    gw.departure_actions({"dad": at(d, 500)}, st, now + 600)
+    assert gw.departure_actions({"dad": at(d, 500)}, st, now + 900)[0] == [d.key]
+
+
+def test_no_close_when_door_is_not_open(auto_close):
+    d = owned_by("dad")
+    now = 1_000_000.0
+    shut = {d.key: {"door_key": d.key, "is_open": 0, "updated_at": now}}
+    assert gw.departure_actions({"dad": at(d, 500)}, shut, now + 900)[0] == []
+
+
+def test_no_close_without_a_gps_fix(auto_close):
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    no_fix = {"dad": {"latitude": None, "longitude": None}}
+    assert gw.departure_actions(no_fix, st, now + 900)[0] == []
+
+
+def test_disabled_by_default_only_clears_the_belief():
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    to_close, to_assume = gw.departure_actions({"dad": at(d, 500)}, st, now)
+    assert to_close == [] and to_assume == [d.key]
+
+
+# --- sensor -----------------------------------------------------------------
+
+def _sensor_door(raw_state, invert=False, monkeypatch=None):
+    d = replace(owned_by("dad"), shelly_host="10.0.0.9", sensor_input="0",
+                sensor_invert=invert)
+    monkeypatch.setattr(shelly, "get_input_state", lambda *a, **k: raw_state)
+    return d
+
+
+def test_sensor_contact_closed_means_door_closed(monkeypatch):
+    d = _sensor_door(True, monkeypatch=monkeypatch)
+    assert door_control.sensed_open(d, now=1.0) is False
+    assert door_control.has_sensor(d) is True
+
+
+def test_sensor_contact_open_means_door_open(monkeypatch):
+    d = _sensor_door(False, monkeypatch=monkeypatch)
+    assert door_control.sensed_open(d, now=1.0) is True
+
+
+def test_sensor_invert_flips_the_reading(monkeypatch):
+    d = _sensor_door(True, invert=True, monkeypatch=monkeypatch)
+    assert door_control.sensed_open(d, now=1.0) is True
+
+
+def test_no_sensor_configured_returns_none(monkeypatch):
+    d = replace(owned_by("dad"), shelly_host="10.0.0.9", sensor_input="")
+    assert door_control.sensed_open(d, now=1.0) is None
+    assert door_control.has_sensor(d) is False
+
+
+def test_unreachable_sensor_returns_none(monkeypatch):
+    d = _sensor_door(None, monkeypatch=monkeypatch)
+    assert door_control.sensed_open(d, now=1.0) is None
+
+
+def test_sensor_overrides_a_wrong_belief(monkeypatch):
+    """The whole point of the sensor: truth beats memory."""
+    d = _sensor_door(True, monkeypatch=monkeypatch)  # contact closed = shut
+    now = 1_000_000.0
+    believes_open = _open_state(d, now)
+    assert door_control.is_open(d, believes_open, now) is False
+
+
+def test_sensor_reading_is_cached_briefly(monkeypatch):
+    d = replace(owned_by("dad"), shelly_host="10.0.0.9", sensor_input="0")
+    calls = {"n": 0}
+
+    def counting(*a, **k):
+        calls["n"] += 1
+        return True
+
+    monkeypatch.setattr(shelly, "get_input_state", counting)
+    door_control.sensed_open(d, now=100.0)
+    door_control.sensed_open(d, now=100.5)
+    assert calls["n"] == 1, "should not re-poll the relay within the cache window"
+    door_control.sensed_open(d, now=100.0 + door_control.SENSOR_CACHE_S + 0.1)
+    assert calls["n"] == 2
+
+
+def test_sensor_stops_the_dangerous_close(monkeypatch, auto_close):
+    """With a sensor saying the door is already shut, auto-close must not
+    fire — this is exactly the case that would otherwise OPEN the door at
+    an empty house."""
+    d = _sensor_door(True, monkeypatch=monkeypatch)  # really closed
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    monkeypatch.setattr(config, "GARAGE_DOORS_BY_KEY", {d.key: d})
+    now = 1_000_000.0
+    believes_open = _open_state(d, now)
+    gw.departure_actions({"dad": at(d, 500)}, believes_open, now)
+    assert gw.departure_actions({"dad": at(d, 500)}, believes_open, now + 900)[0] == []
+
+
+def test_sensor_allows_the_close_when_really_open(monkeypatch, auto_close):
+    d = _sensor_door(False, monkeypatch=monkeypatch)  # really open
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    monkeypatch.setattr(config, "GARAGE_DOORS_BY_KEY", {d.key: d})
+    now = 1_000_000.0
+    shut_belief = {d.key: {"door_key": d.key, "is_open": 0, "updated_at": now}}
+    gw.departure_actions({"dad": at(d, 500)}, shut_belief, now)      # away timer starts
+    assert gw.departure_actions({"dad": at(d, 500)}, shut_belief, now + 900)[0] == [d.key]
+
+
+# --- end to end through _tick ----------------------------------------------
+
+def test_tick_pulses_once_on_departure(pulses, monkeypatch, auto_close):
+    d = replace(owned_by("dad"), shelly_host="10.0.0.9")
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    monkeypatch.setattr(config, "GARAGE_DOORS_BY_KEY", {d.key: d})
+    models.upsert_door_state(d.key, True)          # we believe it's open
+    models.upsert_vehicle_state("dad", at(d, 500)["latitude"], d.longitude, 30, 80, True)
+
+    gw._tick()                                     # away timer starts
+    assert pulses == []
+    _advance(monkeypatch, 1000)
+    gw._tick()                                     # delay elapsed -> close
+    assert pulses == [("10.0.0.9", 0)]
+    assert {x["door_key"]: x["is_open"] for x in models.all_door_states()}[d.key] == 0
+    gw._tick()
+    assert len(pulses) == 1, "must not keep pulsing"
+
+
+def test_failed_auto_close_is_not_retried_but_is_logged(monkeypatch, auto_close, caplog):
+    import logging
+    d = replace(owned_by("dad"), shelly_host="10.0.0.9")
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    monkeypatch.setattr(config, "GARAGE_DOORS_BY_KEY", {d.key: d})
+    monkeypatch.setattr(door_control, "actuate",
+                        lambda door, action: {"ok": False, "via": "shelly", "detail": "timeout"})
+    models.upsert_door_state(d.key, True)
+    models.upsert_vehicle_state("dad", at(d, 500)["latitude"], d.longitude, 30, 80, True)
+    caplog.set_level(logging.WARNING)
+    gw._tick()
+    _advance(monkeypatch, 1000)
+    gw._tick()
+    assert any("Auto-close" in r.message and "FAILED" in r.message for r in caplog.records)
+    # The door is still believed open, so the next arrival is guarded.
+    assert {x["door_key"]: x["is_open"] for x in models.all_door_states()}[d.key] == 1
+
+
+# --- the TTL / delay interaction -------------------------------------------
+
+def test_belief_expiring_before_the_delay_blocks_auto_close(monkeypatch):
+    """Documents the trap: without a sensor the 'open' belief expires after
+    DOOR_OPEN_TTL_S, so a longer close delay means the close never happens."""
+    monkeypatch.setattr(config, "AUTO_CLOSE_ENABLED", True)
+    monkeypatch.setattr(config, "AUTO_CLOSE_DELAY_S", 900)
+    monkeypatch.setattr(door_control, "DOOR_OPEN_TTL_S", 600)
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    gw.departure_actions({"dad": at(d, 500)}, st, now)
+    assert gw.departure_actions({"dad": at(d, 500)}, st, now + 901)[0] == []
+
+
+def test_startup_warns_when_the_delay_outlives_the_belief(monkeypatch):
+    monkeypatch.setattr(config, "AUTO_CLOSE_ENABLED", True)
+    monkeypatch.setattr(config, "AUTO_CLOSE_DELAY_S", 900)
+    monkeypatch.setattr(door_control, "DOOR_OPEN_TTL_S", 600)
+    warnings = door_control.config_warnings()
+    assert any("never run" in w for w in warnings)
+
+
+def test_startup_warns_about_sensorless_auto_close(monkeypatch):
+    monkeypatch.setattr(config, "AUTO_CLOSE_ENABLED", True)
+    d = replace(owned_by("dad"), shelly_host="10.0.0.9", sensor_input="")
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    assert any("empty house" in w for w in door_control.config_warnings())
+
+
+def test_no_warnings_when_a_sensor_is_fitted(monkeypatch):
+    monkeypatch.setattr(config, "AUTO_CLOSE_ENABLED", True)
+    monkeypatch.setattr(config, "AUTO_CLOSE_DELAY_S", 180)
+    monkeypatch.setattr(door_control, "DOOR_OPEN_TTL_S", 600)
+    d = replace(owned_by("dad"), shelly_host="10.0.0.9", sensor_input="0")
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    assert door_control.config_warnings() == []

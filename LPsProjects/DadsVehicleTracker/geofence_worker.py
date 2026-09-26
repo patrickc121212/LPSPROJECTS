@@ -42,6 +42,13 @@ _wake = threading.Event()
 # a daemon thread ticking against a torn-down database.
 _stop = threading.Event()
 
+# door_key -> when its owner was first seen outside the fence. Reset the
+# moment they come back, so "away for N seconds" means this trip, not ever.
+_away_since: dict[str, float] = {}
+# Doors already auto-closed for the current departure; cleared on return so
+# one trip produces at most one close pulse.
+_auto_closed: set[str] = set()
+
 # (vehicle_key, door_key) -> last fire timestamp
 _last_fire: dict[tuple[str, str], float] = {}
 # (vehicle_key, door_key) -> was the vehicle inside the fence last tick?
@@ -94,7 +101,7 @@ def evaluate(
             last = _last_fire.get(key)
             if last is not None and now - last < config.GEOFENCE_DEBOUNCE_S:
                 continue
-            if door_control.believed_open(door.key, door_states, now):
+            if door_control.is_open(door, door_states, now):
                 # A Shelly-wired opener is toggle-only, so pulsing a door
                 # that is already up would shut it on the arriving car.
                 # The crossing is already consumed by _inside above, so the
@@ -107,29 +114,60 @@ def evaluate(
     return fire
 
 
-def doors_to_assume_closed(
+def _owner_away_seconds(door: config.GarageDoor, states: dict[str, dict[str, Any]],
+                        now: float) -> float | None:
+    """How long the door's owner has been outside the fence, or None if they
+    are inside / have no fix. Also maintains the per-door away timer."""
+    s = states.get(door.owner_key)
+    if not s or s.get("latitude") is None or s.get("longitude") is None:
+        return None  # no fix: don't start or advance the timer
+    inside = haversine_m(s["latitude"], s["longitude"],
+                         door.latitude, door.longitude) <= door.radius_m
+    if inside:
+        _away_since.pop(door.key, None)
+        _auto_closed.discard(door.key)
+        return None
+    since = _away_since.setdefault(door.key, now)
+    return max(0.0, now - since)
+
+
+def departure_actions(
     states: dict[str, dict[str, Any]],
     door_states: dict[str, dict],
     now: float,
-) -> list[str]:
-    """Doors whose stale "open" belief should be cleared.
+) -> tuple[list[str], list[str]]:
+    """What to do about doors whose owner has driven away.
 
-    We have no door sensor, so "open" is only ever our memory of the last
-    pulse we sent. Once the door's owner has driven back out of the
-    geofence, the door has all but certainly closed behind them — keeping
-    the belief would block their next arrival from auto-opening. Clearing
-    it on departure is what makes a quick trip out and back work.
+    Returns (to_close, to_assume_closed).
+
+    With AUTO_CLOSE_ENABLED we pulse the door shut once the owner has been
+    gone for AUTO_CLOSE_DELAY_S. Without a position sensor that pulse acts on
+    a belief, and a wrong belief OPENS the door at an empty house — the
+    accepted trade-off recorded in Plan.md.
+
+    With auto-close off we only clear the stale belief, so the owner's next
+    arrival can auto-open (a door essentially always closes behind a
+    departing car).
     """
-    out: list[str] = []
+    to_close: list[str] = []
+    to_assume: list[str] = []
     for door in config.GARAGE_DOORS:
-        if not door_control.believed_open(door.key, door_states, now):
+        away_s = _owner_away_seconds(door, states, now)
+        if away_s is None:
             continue
-        s = states.get(door.owner_key)
-        if not s or s.get("latitude") is None or s.get("longitude") is None:
-            continue  # no fix: leave the belief alone
-        if haversine_m(s["latitude"], s["longitude"], door.latitude, door.longitude) > door.radius_m:
-            out.append(door.key)
-    return out
+        if not door_control.is_open(door, door_states, now):
+            continue
+        if not config.AUTO_CLOSE_ENABLED:
+            to_assume.append(door.key)
+            continue
+        if door.key in _auto_closed:
+            continue
+        if away_s >= config.AUTO_CLOSE_DELAY_S:
+            # Mark here, not at the call site: one attempt per departure
+            # holds even if the caller retries or the pulse fails.
+            _auto_closed.add(door.key)
+            to_close.append(door.key)
+    return to_close, to_assume
 
 
 def _tick() -> None:
@@ -139,11 +177,26 @@ def _tick() -> None:
     now = time.time()
     changed = False
 
-    for door_key in doors_to_assume_closed(states, door_states, now):
+    to_close, to_assume = departure_actions(states, door_states, now)
+
+    for door_key in to_close:
+        door = config.GARAGE_DOORS_BY_KEY[door_key]
+        how = "sensor" if door_control.has_sensor(door) else "inferred state"
+        log.info("Auto-closing %s: owner away and door open per %s", door.label, how)
+        result = door_control.actuate(door, "close")
+        if result["ok"]:
+            models.upsert_door_state(door_key, False)
+            changed = True
+        else:
+            log.warning("Auto-close of %s FAILED (%s): %s",
+                        door.label, result["via"], result["detail"])
+
+    for door_key in to_assume:
         log.info("Assuming %s closed: its owner has left the geofence",
                  config.GARAGE_DOORS_BY_KEY[door_key].label)
         models.upsert_door_state(door_key, False)
         changed = True
+
     if changed:
         door_states = {d["door_key"]: d for d in models.all_door_states()}
 

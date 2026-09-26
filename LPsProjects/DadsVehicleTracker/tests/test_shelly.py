@@ -255,23 +255,26 @@ def test_end_to_end_arrival_pulses_the_relay(pulses, monkeypatch):
 
 # --- departure clears the stale belief --------------------------------------
 
+def _assume(states, door_states, now):
+    return gw.departure_actions(states, door_states, now)[1]
+
+
 def test_owner_leaving_clears_a_stale_open_belief():
     """A quick trip out and back must still auto-open: leaving the fence
     is our proxy for 'the door closed behind them'."""
     d = owned_by("dad")
     now = 1_000_000.0
     open_now = {d.key: {"door_key": d.key, "is_open": 1, "updated_at": now}}
-    away = {"dad": at(d, 500)}
-    home = {"dad": at(d, 5)}
-    assert gw.doors_to_assume_closed(away, open_now, now) == [d.key]
-    assert gw.doors_to_assume_closed(home, open_now, now) == []
+    assert _assume({"dad": at(d, 500)}, open_now, now) == [d.key]
+    gw._away_since.clear()
+    assert _assume({"dad": at(d, 5)}, open_now, now) == []
 
 
 def test_departure_reset_ignores_doors_not_believed_open():
     d = owned_by("dad")
     now = 1_000_000.0
     shut = {d.key: {"door_key": d.key, "is_open": 0, "updated_at": now}}
-    assert gw.doors_to_assume_closed({"dad": at(d, 500)}, shut, now) == []
+    assert _assume({"dad": at(d, 500)}, shut, now) == []
 
 
 def test_departure_reset_ignores_vehicles_without_a_fix():
@@ -279,7 +282,7 @@ def test_departure_reset_ignores_vehicles_without_a_fix():
     now = 1_000_000.0
     open_now = {d.key: {"door_key": d.key, "is_open": 1, "updated_at": now}}
     no_fix = {"dad": {"latitude": None, "longitude": None}}
-    assert gw.doors_to_assume_closed(no_fix, open_now, now) == []
+    assert _assume(no_fix, open_now, now) == []
 
 
 def test_quick_trip_out_and_back_reopens(pulses, monkeypatch):

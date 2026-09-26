@@ -38,6 +38,9 @@ def fresh_db(tmp_path, monkeypatch):
     # Reset in-memory worker state between tests.
     geofence_worker._last_fire.clear()
     geofence_worker._inside.clear()
+    geofence_worker._away_since.clear()
+    geofence_worker._auto_closed.clear()
+    door_control._sensor_cache.clear()
     yield db_file
 
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import urllib.request
 
 import config
@@ -95,6 +96,67 @@ def believed_open(door_key: str, door_states: dict[str, dict], now: float) -> bo
     return (now - (row.get("updated_at") or 0)) < DOOR_OPEN_TTL_S
 
 
+# Sensor readings are cached briefly: the geofence now evaluates on every
+# position update, and we don't want an HTTP call per door per tick.
+SENSOR_CACHE_S = 2.0
+_sensor_cache: dict[str, tuple[float, bool | None]] = {}
+
+
+def sensed_open(door: config.GarageDoor, now: float | None = None) -> bool | None:
+    """True/False from a wired position sensor, or None when there isn't one
+    (or it can't be read). Contact closed = magnet present = door closed,
+    unless the door's sensor_invert says otherwise."""
+    if not (door.shelly_host and door.sensor_input):
+        return None
+    now = time.time() if now is None else now
+    hit = _sensor_cache.get(door.key)
+    if hit and now - hit[0] < SENSOR_CACHE_S:
+        return hit[1]
+    raw = shelly.get_input_state(door.shelly_host, int(door.sensor_input))
+    if raw is None:
+        result = None
+    else:
+        closed = (not raw) if door.sensor_invert else raw
+        result = not closed
+    _sensor_cache[door.key] = (now, result)
+    return result
+
+
+def is_open(door: config.GarageDoor, door_states: dict[str, dict], now: float) -> bool:
+    """Best available answer to "is this door open?".
+
+    A wired sensor is the truth. Without one we fall back to believed_open,
+    which is only our memory of the last pulse we sent.
+    """
+    sensed = sensed_open(door, now)
+    if sensed is not None:
+        return sensed
+    return believed_open(door.key, door_states, now)
+
+
+def has_sensor(door: config.GarageDoor) -> bool:
+    return bool(door.shelly_host and door.sensor_input)
+
+
+def config_warnings() -> list[str]:
+    """Settings that would quietly stop auto-close working."""
+    out: list[str] = []
+    if config.AUTO_CLOSE_ENABLED:
+        sensorless = [d.label for d in config.GARAGE_DOORS
+                      if d.shelly_host and not has_sensor(d)]
+        if sensorless:
+            out.append(
+                "AUTO_CLOSE_ENABLED with no position sensor on "
+                + ", ".join(sensorless)
+                + ": a wrong belief will OPEN the door at an empty house")
+        if DOOR_OPEN_TTL_S and config.AUTO_CLOSE_DELAY_S >= DOOR_OPEN_TTL_S:
+            out.append(
+                f"AUTO_CLOSE_DELAY_S ({config.AUTO_CLOSE_DELAY_S}s) >= DOOR_OPEN_TTL_S "
+                f"({DOOR_OPEN_TTL_S}s): without a sensor the door's 'open' belief "
+                "expires before the close fires, so auto-close would never run")
+    return out
+
+
 def startup_check() -> None:
     """Log each door's actuation path once at boot, and flag a Shelly whose
     pulse config could latch the opener button on."""
@@ -102,8 +164,14 @@ def startup_check() -> None:
         if door.shelly_host:
             ok, detail = shelly.check_pulse_config(door.shelly_host, door.shelly_channel)
             level = log.info if ok else log.warning
-            level("%s -> Shelly %s (%s)", door.label, door.shelly_host, detail)
+            sensor = f"sensor input:{door.sensor_input}" if has_sensor(door) else "NO position sensor (state is inferred)"
+            level("%s -> Shelly %s (%s, %s)", door.label, door.shelly_host, detail, sensor)
         elif WEBHOOK_URL:
             log.info("%s -> Google Routine webhook", door.label)
         else:
             log.info("%s -> dry-run (no Shelly, no webhook)", door.label)
+    for warning in config_warnings():
+        log.warning("%s", warning)
+    if config.AUTO_CLOSE_ENABLED:
+        log.info("Auto-close ON: closes %ss after the owner leaves the geofence.",
+                 config.AUTO_CLOSE_DELAY_S)
