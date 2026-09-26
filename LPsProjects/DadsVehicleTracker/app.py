@@ -45,6 +45,7 @@ from flask import (
 
 import charging
 import config
+import trips
 import door_control
 import geofence_worker
 import login_guard
@@ -196,12 +197,55 @@ def create_app(start_workers: bool = True) -> Flask:
             currency=config.CURRENCY_SYMBOL,
         )
 
+    @app.route("/trips")
+    @login_required
+    def trips_view():
+        who = request.args.get("as", "")
+        who = who if who in config.VEHICLES_BY_KEY else ""
+        rows = models.list_trips(limit=200, vehicle_key=who or None)
+        for t in rows:
+            t["from_name"] = trips.place_name(t.get("start_lat"), t.get("start_lon"))
+            t["to_name"] = trips.place_name(t.get("end_lat"), t.get("end_lon"))
+        return render_template(
+            "trips.html",
+            vehicles=config.VEHICLES,
+            me=who,
+            trips=rows,
+            summary=trips.summary(rows),
+            months=models.trip_totals_by_month(),
+        )
+
     # --- JSON API ---------------------------------------------------------
 
     @app.route("/api/vehicles")
     @login_required
     def api_vehicles() -> Any:
         return jsonify(models.all_vehicle_states())
+
+    @app.route("/api/trips")
+    @login_required
+    def api_trips() -> Any:
+        who = request.args.get("as", "")
+        who = who if who in config.VEHICLES_BY_KEY else None
+        rows = models.list_trips(limit=200, vehicle_key=who)
+        return jsonify({"summary": trips.summary(rows),
+                        "by_month": models.trip_totals_by_month(),
+                        "trips": rows})
+
+    @app.route("/api/trips/<int:trip_id>/path")
+    @login_required
+    def api_trip_path(trip_id: int) -> Any:
+        trip = models.get_trip(trip_id)
+        if trip is None:
+            abort(404)
+        path = models.trip_path(trip_id)
+        if not path:
+            # Points recorded before trip tagging, or after a prune, are not
+            # attached to the trip: fall back to the time window.
+            path = models.positions_between(
+                trip["vehicle_key"], trip["started_at"],
+                trip.get("ended_at") or (trip["started_at"] + 86400))
+        return jsonify({"trip": trip, "path": path})
 
     @app.route("/api/charging")
     @login_required

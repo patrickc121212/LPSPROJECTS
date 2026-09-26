@@ -76,6 +76,37 @@ CREATE TABLE IF NOT EXISTS charge_session (
     counter_last   REAL
 );
 
+CREATE TABLE IF NOT EXISTS trip (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    vehicle_key    TEXT NOT NULL,
+    started_at     REAL NOT NULL,
+    ended_at       REAL,            -- NULL while driving
+    start_lat      REAL, start_lon REAL,
+    end_lat        REAL, end_lon   REAL,
+    distance_mi    REAL DEFAULT 0,
+    max_speed_mph  REAL DEFAULT 0,
+    start_pct      INTEGER, end_pct INTEGER,
+    odo_start      REAL, odo_end   REAL,
+    source         TEXT,            -- how distance was measured: odometer | gps
+    last_lat       REAL, last_lon  REAL,   -- running point for GPS distance
+    last_moved_at  REAL             -- last time it was actually moving
+);
+
+CREATE TABLE IF NOT EXISTS position_history (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    vehicle_key    TEXT NOT NULL,
+    ts             REAL NOT NULL,
+    latitude       REAL NOT NULL,
+    longitude      REAL NOT NULL,
+    speed_mph      REAL,
+    battery_pct    INTEGER,
+    trip_id        INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_trip_vehicle ON trip(vehicle_key, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trip_open ON trip(vehicle_key, ended_at);
+CREATE INDEX IF NOT EXISTS idx_pos_vehicle_ts ON position_history(vehicle_key, ts);
+CREATE INDEX IF NOT EXISTS idx_pos_trip ON position_history(trip_id, ts);
 CREATE INDEX IF NOT EXISTS idx_inbox_recipient ON inbox(recipient_key, read_at);
 CREATE INDEX IF NOT EXISTS idx_charge_vehicle ON charge_session(vehicle_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_charge_open ON charge_session(vehicle_key, ended_at);
@@ -250,6 +281,129 @@ def last_seen(driver_key: str) -> float | None:
             "SELECT last_seen_at FROM read_receipt WHERE driver_key = ?", (driver_key,)
         ).fetchone()
     return None if row is None else row["last_seen_at"]
+
+
+# --- Trips and position history --------------------------------------------
+
+def add_position(vehicle_key: str, ts: float, lat: float, lon: float,
+                 speed_mph: float | None, battery_pct: int | None,
+                 trip_id: int | None) -> None:
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO position_history(vehicle_key, ts, latitude, longitude, "
+            "speed_mph, battery_pct, trip_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (vehicle_key, ts, lat, lon, speed_mph, battery_pct, trip_id),
+        )
+
+
+def open_trip(vehicle_key: str, started_at: float, lat: float, lon: float,
+              battery_pct: int | None, odometer: float | None) -> int:
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO trip(vehicle_key, started_at, start_lat, start_lon, "
+            "last_lat, last_lon, start_pct, odo_start, last_moved_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (vehicle_key, started_at, lat, lon, lat, lon, battery_pct, odometer, started_at),
+        )
+        return cur.lastrowid
+
+
+def get_open_trip(vehicle_key: str) -> dict | None:
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM trip WHERE vehicle_key = ? AND ended_at IS NULL "
+            "ORDER BY id DESC LIMIT 1", (vehicle_key,)
+        ).fetchone()
+    return None if row is None else dict(row)
+
+
+def update_trip(trip_id: int, **fields) -> None:
+    allowed = {"end_lat", "end_lon", "distance_mi", "max_speed_mph", "end_pct",
+               "odo_end", "last_lat", "last_lon", "last_moved_at"}
+    sets = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    if not sets:
+        return
+    clause = ", ".join(f"{k} = ?" for k in sets)
+    with db() as conn:
+        conn.execute(f"UPDATE trip SET {clause} WHERE id = ?", (*sets.values(), trip_id))
+
+
+def close_trip(trip_id: int, ended_at: float, distance_mi: float | None,
+               source: str | None) -> None:
+    with db() as conn:
+        conn.execute(
+            "UPDATE trip SET ended_at = ?, distance_mi = ?, source = ? WHERE id = ?",
+            (ended_at, distance_mi, source, trip_id),
+        )
+
+
+def delete_trip(trip_id: int) -> None:
+    """Used to discard trips too short to be worth keeping."""
+    with db() as conn:
+        conn.execute("UPDATE position_history SET trip_id = NULL WHERE trip_id = ?", (trip_id,))
+        conn.execute("DELETE FROM trip WHERE id = ?", (trip_id,))
+
+
+def list_trips(limit: int = 100, vehicle_key: str | None = None,
+               since: float | None = None) -> list[dict]:
+    q = "SELECT * FROM trip WHERE 1=1"
+    args: list = []
+    if vehicle_key:
+        q += " AND vehicle_key = ?"
+        args.append(vehicle_key)
+    if since is not None:
+        q += " AND started_at >= ?"
+        args.append(since)
+    q += " ORDER BY started_at DESC LIMIT ?"
+    args.append(limit)
+    with db() as conn:
+        return [dict(r) for r in conn.execute(q, args).fetchall()]
+
+
+def get_trip(trip_id: int) -> dict | None:
+    with db() as conn:
+        row = conn.execute("SELECT * FROM trip WHERE id = ?", (trip_id,)).fetchone()
+    return None if row is None else dict(row)
+
+
+def trip_path(trip_id: int, limit: int = 5000) -> list[dict]:
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT ts, latitude, longitude, speed_mph, battery_pct FROM position_history "
+            "WHERE trip_id = ? ORDER BY ts LIMIT ?", (trip_id, limit)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def positions_between(vehicle_key: str, start: float, end: float,
+                      limit: int = 5000) -> list[dict]:
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT ts, latitude, longitude, speed_mph, battery_pct FROM position_history "
+            "WHERE vehicle_key = ? AND ts BETWEEN ? AND ? ORDER BY ts LIMIT ?",
+            (vehicle_key, start, end, limit)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def trip_totals_by_month() -> list[dict]:
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT vehicle_key, strftime('%Y-%m', started_at, 'unixepoch', 'localtime') AS month, "
+            "COUNT(*) AS trips, SUM(distance_mi) AS miles, "
+            "SUM(ended_at - started_at) AS seconds "
+            "FROM trip WHERE ended_at IS NOT NULL "
+            "GROUP BY vehicle_key, month ORDER BY month DESC, vehicle_key"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def prune_history(older_than: float) -> int:
+    """Drop position points older than a cutoff. Trips themselves are kept —
+    they are small, and losing the summary loses more than the breadcrumbs."""
+    with db() as conn:
+        cur = conn.execute("DELETE FROM position_history WHERE ts < ?", (older_than,))
+        return cur.rowcount
 
 
 # --- Charging sessions -----------------------------------------------------

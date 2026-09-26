@@ -81,6 +81,14 @@
 7. **DDNS** for `telemetry.dowdsgarage.com` — home IP is `68.184.61.239` today; if the ISP rotates it, the cars lose the receiver. Cloudflare token already has DNS edit rights; a `cloudflare-ddns` container in `telemetry/docker-compose.yml` would cover it.
 8. Invite Mom and LP to the tailnet (or rely on the Funnel URL + Access).
 
+## Trip history (added 2026-09-26)
+- Until now the app kept only each car's *current* position: every update overwrote the last and the previous one was gone. `position_history` now stores the breadcrumbs and `trip` groups them.
+- `trips.py`: a trip opens when a car is moving (speed >= 1 mph, or gear D/R so creeping in traffic counts) and closes after `TRIP_IDLE_END_S` (180 s) stationary. Trips under `TRIP_MIN_DISTANCE_MI` (0.2) are discarded so driveway shuffles don't fill the list. The end time is credited to when the car last moved, not when we noticed it had stopped, so idle time isn't counted as driving.
+- Distance: `Odometer` delta when the car reports it (exact), else summed great-circle hops between points. Same belt-and-braces shape as the charging energy sources, and for the same reason — the live cars have already surprised us twice on which fields they actually send.
+- `/trips` lists trips with from/to (labelled "Home" inside a garage fence), miles, duration, top speed and battery used, plus per-month totals; a **Map** button draws the route on Leaflet. `/api/trips` and `/api/trips/<id>/path` serve the same data.
+- Retention: `HISTORY_RETENTION_DAYS` (365) prunes breadcrumbs hourly. Trip summaries are kept regardless — they are tiny, and losing them loses more than losing the detail. Set 0 to keep everything.
+- **Privacy**: this records where every driver goes and how fast. Worth the family knowing it exists; retention is one env var and history can be pruned at any time.
+
 ## Login hardening (added 2026-09-26)
 - The public URL is swept constantly: **660 probe requests 2026-09-12 to 09-25** for `/.env` (and `/api/.env`, `/src/.env`, `/backend/.env`, `/app/.env`, `/.env.production`), `/.git/config`, `/.git/HEAD`, a dozen `phpinfo` variants and a WordPress `rest_route` exploit. All were refused — Flask serves only declared routes plus `/static/` — but they show the host is found and indexed within hours of going public.
 - Before this, `/login` had no rate limit, no lockout and **no logging of failures**: a brute-force attempt left no trace at all.

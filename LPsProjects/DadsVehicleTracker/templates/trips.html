@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Trips — Tesla Tracker{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin="">
+{% endblock %}
+{% block content %}
+<section class="trips-page">
+  <header class="inbox-head">
+    <h1>Trips</h1>
+    <form method="get" class="me-picker">
+      <label>Vehicle
+        <select name="as" onchange="this.form.submit()">
+          <option value="">All</option>
+          {% for v in vehicles %}
+            <option value="{{ v.key }}" {% if v.key == me %}selected{% endif %}>{{ v.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </form>
+  </header>
+
+  <div class="stat-row">
+    <div class="stat"><span class="n">{{ summary.trips }}</span><span class="l">trips</span></div>
+    <div class="stat"><span class="n">{{ summary.miles }}</span><span class="l">miles</span></div>
+    <div class="stat"><span class="n">{{ summary.hours }}</span><span class="l">hours driving</span></div>
+    <div class="stat"><span class="n">{{ summary.max_speed }}</span><span class="l">top mph</span></div>
+  </div>
+
+  <div id="trip-map" class="trip-map" hidden></div>
+
+  {% if not trips %}
+    <p class="muted">No trips recorded yet. One appears here once a car has driven
+      more than a fifth of a mile and then parked for a few minutes.</p>
+  {% endif %}
+
+  <div class="table-wrap">
+    <table class="grid">
+      <thead>
+        <tr><th>Started</th><th>Vehicle</th><th>From → To</th><th class="r">Miles</th>
+            <th class="r">Duration</th><th class="r">Top</th><th class="r">Battery</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for t in trips %}
+          {% set v = vehicles|selectattr('key','equalto',t.vehicle_key)|first %}
+          <tr class="{% if not t.ended_at %}charging-now{% endif %}">
+            <td>{{ t.started_at|localtime }}{% if not t.ended_at %} <span class="badge">driving</span>{% endif %}</td>
+            <td><span class="dot" style="--c: {{ v.color if v else '#888' }}"></span> {{ v.label if v else t.vehicle_key }}</td>
+            <td>{{ t.from_name or '—' }} → {{ t.to_name or '—' }}</td>
+            <td class="r">{{ '%.1f'|format(t.distance_mi or 0) }}</td>
+            <td class="r">{% if t.ended_at %}{{ ((t.ended_at - t.started_at) / 60)|round|int }} min{% else %}—{% endif %}</td>
+            <td class="r">{{ (t.max_speed_mph or 0)|round|int }}</td>
+            <td class="r">{% if t.start_pct is not none %}{{ t.start_pct }}%{% if t.end_pct is not none %} → {{ t.end_pct }}%{% endif %}{% else %}—{% endif %}</td>
+            <td><button class="btn show-path" data-trip="{{ t.id }}">Map</button></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if months %}
+  <h2>By month</h2>
+  <div class="table-wrap">
+    <table class="grid">
+      <thead><tr><th>Month</th><th>Vehicle</th><th class="r">Trips</th><th class="r">Miles</th><th class="r">Hours</th></tr></thead>
+      <tbody>
+        {% for m in months %}
+          {% set v = vehicles|selectattr('key','equalto',m.vehicle_key)|first %}
+          <tr>
+            <td>{{ m.month }}</td><td>{{ v.label if v else m.vehicle_key }}</td>
+            <td class="r">{{ m.trips }}</td>
+            <td class="r">{{ '%.1f'|format(m.miles or 0) }}</td>
+            <td class="r">{{ '%.1f'|format((m.seconds or 0) / 3600) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""></script>
+<script>
+(function () {
+  'use strict';
+  const box = document.getElementById('trip-map');
+  let map = null, layer = null;
+
+  document.querySelectorAll('.show-path').forEach(btn => {
+    btn.addEventListener('click', () => {
+      fetch('/api/trips/' + btn.dataset.trip + '/path')
+        .then(r => r.json())
+        .then(d => {
+          const pts = (d.path || [])
+            .filter(p => p.latitude != null && p.longitude != null)
+            .map(p => [p.latitude, p.longitude]);
+          if (!pts.length) {
+            box.hidden = false;
+            box.textContent = 'No position history stored for this trip.';
+            return;
+          }
+          box.textContent = '';
+          box.hidden = false;
+          if (!map) {
+            map = L.map('trip-map');
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+              maxZoom: 19, attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
+          } else {
+            map.invalidateSize();
+          }
+          if (layer) map.removeLayer(layer);
+          layer = L.layerGroup([
+            L.polyline(pts, {color: '#2563eb', weight: 4, opacity: 0.85}),
+            L.circleMarker(pts[0], {radius: 6, color: '#16a34a', fillOpacity: 1}).bindPopup('Start'),
+            L.circleMarker(pts[pts.length - 1], {radius: 6, color: '#dc2626', fillOpacity: 1}).bindPopup('End')
+          ]).addTo(map);
+          map.fitBounds(L.polyline(pts).getBounds(), {padding: [25, 25]});
+          box.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+        })
+        .catch(() => {
+          box.hidden = false;
+          box.textContent = 'Could not load that trip.';
+        });
+    });
+  });
+})();
+</script>
+{% endblock %}

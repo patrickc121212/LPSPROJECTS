@@ -34,6 +34,10 @@ for _k, _v in {
     "PARKED_JITTER_M": "8",
     "DEPART_OPEN_ENABLED": "0",
     "DEPART_OPEN_RADIUS_M": "25",
+    "TRIP_IDLE_END_S": "180",
+    "TRIP_MIN_DISTANCE_MI": "0.2",
+    "HISTORY_MIN_MOVE_M": "10",
+    "HISTORY_RETENTION_DAYS": "365",
     "DOOR_OPEN_TTL_S": "600",
     "GEOFENCE_INTERVAL_S": "30",
     "TESLA_POLL_INTERVAL_S": "30",
@@ -69,6 +73,9 @@ def fresh_db(tmp_path, monkeypatch):
     geofence_worker._still_ref.clear()
     geofence_worker._parked_closed.clear()
     geofence_worker._depart_opened.clear()
+    import trips as _trips
+    _trips._last_point.clear()
+    _trips._last_prune = 0.0
     door_control._sensor_cache.clear()
     yield db_file
 

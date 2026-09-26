@@ -127,3 +127,8 @@ table.grid td.r, table.grid th.r { text-align: right; }
 tr.charging-now { background: #f0fdf4; }
 .badge { background: #16a34a; color: #fff; border-radius: 999px; padding: 0 .45rem;
          font-size: .7rem; vertical-align: middle; }
+
+/* --- Trips page --- */
+.trip-map { height: 380px; border-radius: 8px; border: 1px solid #e3e6ea;
+            margin: 1rem 0; padding: 0; }
+.btn.show-path { padding: .15rem .5rem; font-size: .8rem; }

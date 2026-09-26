@@ -315,6 +315,8 @@ def telemetry_fields() -> dict:
         # Buckling up is our "about to drive off" cue, so report it promptly.
         # It only transmits on change, so the cost is a couple of events a day.
         "DriverSeatBelt":      {"interval_seconds": 1},
+        # Exact trip distance, better than summing GPS hops.
+        "Odometer":            {"interval_seconds": 60},
         "VehicleName":         {"interval_seconds": 3600},
     }
 

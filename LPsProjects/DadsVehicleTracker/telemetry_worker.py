@@ -115,6 +115,8 @@ def apply_signal(vehicle_key: str, field: str, value: Any) -> dict[str, Any]:
                 row["speed_mph"] = 0.0
         elif field == "DetailedChargeState":
             row["charge_state"] = str(value).replace("DetailedChargeState", "") if value is not None else None
+        elif field == "Odometer":
+            row["odometer"] = _num(value)
         elif field == "ACChargingEnergyIn":
             row["ac_energy"] = _num(value)
         elif field == "DCChargingEnergyIn":
@@ -183,6 +185,7 @@ def flush() -> None:
             bool(r.get("online", False)),
             seatbelt=r.get("seatbelt"),
         )
+    _update_trips(rows)
     _update_charging(rows)
     bus.publish("vehicles", models.all_vehicle_states())
 
@@ -195,6 +198,20 @@ def _at_home(row: dict) -> bool | None:
         return None
     return any(haversine_m(lat, lon, d.latitude, d.longitude) <= d.radius_m
                for d in config.GARAGE_DOORS)
+
+
+def _update_trips(rows: list[dict]) -> None:
+    import trips
+    now = time.time()
+    for r in rows:
+        try:
+            trips.observe(r["vehicle_key"], r, now)
+        except Exception as exc:  # noqa: BLE001 — never let this break the map
+            log.exception("trip update failed for %s: %s", r.get("vehicle_key"), exc)
+    try:
+        trips.maybe_prune(now)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("history prune failed: %s", exc)
 
 
 def _update_charging(rows: list[dict]) -> None:

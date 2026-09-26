@@ -185,6 +185,19 @@ DEPART_OPEN_RADIUS_M = float(os.getenv("DEPART_OPEN_RADIUS_M", "25"))
 ELECTRICITY_RATE_PER_KWH = float(os.getenv("ELECTRICITY_RATE_PER_KWH", "0.13"))
 CURRENCY_SYMBOL = os.getenv("CURRENCY_SYMBOL", "$")
 
+# --- Trip history -----------------------------------------------------------
+# A trip ends once the car has been stationary this long.
+TRIP_IDLE_END_S = int(os.getenv("TRIP_IDLE_END_S", "180"))
+# Shorter trips are discarded, so shuffling a car on the driveway doesn't
+# fill the list with noise.
+TRIP_MIN_DISTANCE_MI = float(os.getenv("TRIP_MIN_DISTANCE_MI", "0.2"))
+# Movement below this is GPS noise rather than the car going anywhere.
+HISTORY_MIN_MOVE_M = float(os.getenv("HISTORY_MIN_MOVE_M", "10"))
+# How long to keep the breadcrumbs. Trip summaries are kept regardless —
+# they are tiny, and losing them loses more than losing the detail.
+# 0 disables pruning.
+HISTORY_RETENTION_DAYS = int(os.getenv("HISTORY_RETENTION_DAYS", "365"))
+
 # SMS fallback cadence — if a driver hasn't checked in for this long,
 # the message is also pushed over Twilio SMS.
 SMS_FALLBACK_AFTER_S = int(os.getenv("SMS_FALLBACK_AFTER_S", "300"))
