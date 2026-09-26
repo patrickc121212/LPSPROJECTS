@@ -14,11 +14,11 @@
     <a href="{{ url_for('map_view') }}">Map</a>
     <a href="{{ url_for('inbox_view') }}">Inbox</a>
     <a href="{{ url_for('doors_view') }}">Doors</a>
-    <a href="{{ url_for('trips_view') }}">Trips</a>
+    {% if is_admin %}<a href="{{ url_for('trips_view') }}">Trips</a>{% endif %}
     <a href="{{ url_for('charging_view') }}">Charging</a>
   </nav>
   <div class="who">
-    <span>{{ session.get('user', '') }}</span>
+    <span>{{ session.get('user', '') }}{% if is_admin %} <span class="badge">admin</span>{% endif %}</span>
     <a href="{{ url_for('logout') }}">Logout</a>
   </div>
 </header>

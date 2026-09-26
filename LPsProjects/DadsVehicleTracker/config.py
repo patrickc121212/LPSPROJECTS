@@ -206,6 +206,36 @@ SMS_FALLBACK_AFTER_S = int(os.getenv("SMS_FALLBACK_AFTER_S", "300"))
 SHARED_LOGIN_USERNAME = os.getenv("APP_USERNAME", "family")
 SHARED_LOGIN_PASSWORD = os.getenv("APP_PASSWORD", "changeme")
 
+# A second, higher-privilege login for anything that records where people
+# have been. Everyone in the family can see live positions and work the
+# doors; trip history is deliberately narrower.
+# No default password: if ADMIN_PASSWORD is unset the admin login simply
+# does not exist and the history pages stay shut.
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+
+ROLE_ADMIN = "admin"
+ROLE_FAMILY = "family"
+
+
+def authenticate(username: str, password: str) -> str | None:
+    """Return the role these credentials grant, or None.
+
+    Both candidates are always compared so the work done does not reveal
+    which username was tried.
+    """
+    import hmac
+    family = (hmac.compare_digest(username, SHARED_LOGIN_USERNAME)
+              & hmac.compare_digest(password, SHARED_LOGIN_PASSWORD))
+    admin = bool(ADMIN_PASSWORD) and (
+        hmac.compare_digest(username, ADMIN_USERNAME)
+        & hmac.compare_digest(password, ADMIN_PASSWORD))
+    if admin:
+        return ROLE_ADMIN
+    if family:
+        return ROLE_FAMILY
+    return None
+
 # Where the SQLite file lives.
 DB_PATH = os.getenv("TRACKER_DB", "data/tracker.db")
 

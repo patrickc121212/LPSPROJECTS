@@ -20,6 +20,8 @@ os.environ.setdefault("GEOFENCE_DEBOUNCE_S", "120")
 os.environ.setdefault("SMS_FALLBACK_AFTER_S", "300")
 os.environ["APP_USERNAME"] = "family"
 os.environ["APP_PASSWORD"] = "testpw"
+os.environ["ADMIN_USERNAME"] = "admin"
+os.environ["ADMIN_PASSWORD"] = "adminpw"
 
 # Pin everything the behaviour depends on. config.py calls load_dotenv(),
 # which does NOT override values already in os.environ, so setting them here
@@ -96,6 +98,13 @@ def client(app):
 @pytest.fixture
 def auth(client):
     client.post("/login", data={"username": "family", "password": "testpw"})
+    return client
+
+
+@pytest.fixture
+def admin(client):
+    """Signed in with the higher-privilege credential (trip history)."""
+    client.post("/login", data={"username": "admin", "password": "adminpw"})
     return client
 
 

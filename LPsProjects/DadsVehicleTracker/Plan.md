@@ -82,6 +82,7 @@
 8. Invite Mom and LP to the tailnet (or rely on the Funnel URL + Access).
 
 ## Trip history (added 2026-09-26)
+- **Behind an admin login** (added the same day at Patrick's request): trip history reveals where each driver has been, so it needs a narrower audience than the live map. `ADMIN_USERNAME`/`ADMIN_PASSWORD` in `.env` grant the `admin` role; the existing family login keeps the map, doors, inbox and charging. `/trips`, `/api/trips` and `/api/trips/<id>/path` all use `@admin_required` — hiding the nav link alone would have left the URLs open. Fails closed: an unset `ADMIN_PASSWORD` means no admin login exists, and a session with no role (one created before roles) is treated as family, not promoted.
 - Until now the app kept only each car's *current* position: every update overwrote the last and the previous one was gone. `position_history` now stores the breadcrumbs and `trip` groups them.
 - `trips.py`: a trip opens when a car is moving (speed >= 1 mph, or gear D/R so creeping in traffic counts) and closes after `TRIP_IDLE_END_S` (180 s) stationary. Trips under `TRIP_MIN_DISTANCE_MI` (0.2) are discarded so driveway shuffles don't fill the list. The end time is credited to when the car last moved, not when we noticed it had stopped, so idle time isn't counted as driving.
 - Distance: `Odometer` delta when the car reports it (exact), else summed great-circle hops between points. Same belt-and-braces shape as the charging energy sources, and for the same reason — the live cars have already surprised us twice on which fields they actually send.

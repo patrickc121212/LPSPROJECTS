@@ -20,7 +20,6 @@ Routes:
 """
 from __future__ import annotations
 
-import hmac
 import logging
 import os
 import queue
@@ -100,6 +99,26 @@ def create_app(start_workers: bool = True) -> Flask:
             return fn(*a, **kw)
         return _w
 
+    def admin_required(fn):
+        """For anything that reveals where people have been.
+
+        Sessions created before roles existed have no role key, so an
+        unknown role is treated as family rather than admin.
+        """
+        @wraps(fn)
+        def _w(*a, **kw):
+            if not session.get("user"):
+                return redirect(url_for("login", next=request.path))
+            if session.get("role") != config.ROLE_ADMIN:
+                log.warning("Denied %s to non-admin session", request.path)
+                abort(403)
+            return fn(*a, **kw)
+        return _w
+
+    @app.context_processor
+    def _inject_role():
+        return {"is_admin": session.get("role") == config.ROLE_ADMIN}
+
     @app.route("/login", methods=["GET", "POST"])
     def login():
         if request.method == "POST":
@@ -114,12 +133,12 @@ def create_app(start_workers: bool = True) -> Flask:
 
             u = request.form.get("username", "")
             p = request.form.get("password", "")
-            ok_u = hmac.compare_digest(u, config.SHARED_LOGIN_USERNAME)
-            ok_p = hmac.compare_digest(p, config.SHARED_LOGIN_PASSWORD)
-            if ok_u and ok_p:
+            role = config.authenticate(u, p)
+            if role:
                 login_guard.guard.record_success(key)
-                log.info("Login OK from %s", key)
+                log.info("Login OK from %s as %s", key, role)
                 session["user"] = u
+                session["role"] = role
                 nxt = request.args.get("next", "")
                 # Only follow relative paths; never an absolute URL.
                 if not nxt.startswith("/") or nxt.startswith("//"):
@@ -198,7 +217,7 @@ def create_app(start_workers: bool = True) -> Flask:
         )
 
     @app.route("/trips")
-    @login_required
+    @admin_required
     def trips_view():
         who = request.args.get("as", "")
         who = who if who in config.VEHICLES_BY_KEY else ""
@@ -223,7 +242,7 @@ def create_app(start_workers: bool = True) -> Flask:
         return jsonify(models.all_vehicle_states())
 
     @app.route("/api/trips")
-    @login_required
+    @admin_required
     def api_trips() -> Any:
         who = request.args.get("as", "")
         who = who if who in config.VEHICLES_BY_KEY else None
@@ -233,7 +252,7 @@ def create_app(start_workers: bool = True) -> Flask:
                         "trips": rows})
 
     @app.route("/api/trips/<int:trip_id>/path")
-    @login_required
+    @admin_required
     def api_trip_path(trip_id: int) -> Any:
         trip = models.get_trip(trip_id)
         if trip is None:

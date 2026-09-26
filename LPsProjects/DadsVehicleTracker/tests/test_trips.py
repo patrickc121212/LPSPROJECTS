@@ -257,28 +257,84 @@ def test_trip_failure_never_breaks_the_map(monkeypatch, caplog):
     tw._state.clear()
 
 
-def test_trips_page_and_api(auth):
+def test_trips_page_and_api(admin):
     d = owned_by("dad")
     trips.observe("dad", _drive("dad", d, 0), 1000.0)
     trips.observe("dad", _drive("dad", d, 5000), 1100.0)
     trips.observe("dad", _drive("dad", d, 5000, speed=0, gear="P"),
                   1100.0 + config.TRIP_IDLE_END_S + 1)
-    assert auth.get("/trips").status_code == 200
-    body = auth.get("/api/trips").get_json()
+    assert admin.get("/trips").status_code == 200
+    body = admin.get("/api/trips").get_json()
     assert body["summary"]["trips"] == 1 and len(body["trips"]) == 1
 
 
-def test_trip_path_endpoint(auth):
+def test_trip_path_endpoint(admin):
     d = owned_by("dad")
     trips.observe("dad", _drive("dad", d, 0), 1000.0)
     trips.observe("dad", _drive("dad", d, 2000), 1060.0)
     tid = models.get_open_trip("dad")["id"]
-    body = auth.get(f"/api/trips/{tid}/path").get_json()
+    body = admin.get(f"/api/trips/{tid}/path").get_json()
     assert len(body["path"]) >= 2
     assert body["trip"]["id"] == tid
-    assert auth.get("/api/trips/99999/path").status_code == 404
+    assert admin.get("/api/trips/99999/path").status_code == 404
 
 
 def test_trips_require_login(client):
     assert client.get("/trips").status_code == 302
     assert client.get("/api/trips").status_code == 302
+
+
+# --- who may see where people have been --------------------------------------
+
+def test_family_login_cannot_reach_trip_history(auth):
+    """Live positions and doors are for everyone; history is not."""
+    assert auth.get("/trips").status_code == 403
+    assert auth.get("/api/trips").status_code == 403
+    assert auth.get("/api/trips/1/path").status_code == 403
+
+
+def test_family_can_still_use_the_rest_of_the_app(auth):
+    for path in ("/map", "/doors", "/inbox", "/charging",
+                 "/api/vehicles", "/api/doors", "/api/charging"):
+        assert auth.get(path).status_code == 200, path
+
+
+def test_trips_link_is_hidden_from_family_and_shown_to_admin(app):
+    # Separate clients: the auth and admin fixtures share one, so signing in
+    # on both would just leave whichever logged in last.
+    fam, adm = app.test_client(), app.test_client()
+    fam.post("/login", data={"username": "family", "password": "testpw"})
+    adm.post("/login", data={"username": "admin", "password": "adminpw"})
+    assert b'href="/trips"' not in fam.get("/map").data
+    assert b'href="/trips"' in adm.get("/map").data
+
+
+def test_admin_login_grants_the_role():
+    import config
+    assert config.authenticate("admin", "adminpw") == config.ROLE_ADMIN
+    assert config.authenticate("family", "testpw") == config.ROLE_FAMILY
+    assert config.authenticate("admin", "testpw") is None
+    assert config.authenticate("family", "adminpw") is None
+    assert config.authenticate("", "") is None
+
+
+def test_admin_login_is_disabled_when_no_password_is_set(monkeypatch):
+    """Fail closed: an unset ADMIN_PASSWORD must not mean 'any password'."""
+    import config
+    monkeypatch.setattr(config, "ADMIN_PASSWORD", "")
+    assert config.authenticate("admin", "") is None
+    assert config.authenticate("admin", "anything") is None
+
+
+def test_session_without_a_role_is_not_treated_as_admin(client):
+    """Sessions predating roles must not be silently promoted."""
+    client.post("/login", data={"username": "family", "password": "testpw"})
+    with client.session_transaction() as sess:
+        sess.pop("role", None)
+    assert client.get("/trips").status_code == 403
+
+
+def test_logging_out_drops_the_role(admin):
+    assert admin.get("/trips").status_code == 200
+    admin.get("/logout")
+    assert admin.get("/trips").status_code == 302
