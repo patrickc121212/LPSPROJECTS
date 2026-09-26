@@ -301,3 +301,22 @@ def test_quick_trip_out_and_back_reopens(pulses, monkeypatch):
     assert {x["door_key"]: x["is_open"] for x in models.all_door_states()}[d.key] == 0
     put(5);   gw._tick()           # arrive again -> pulses again
     assert len(pulses) == 2
+
+
+def test_request_tick_sets_the_wake_event():
+    gw._wake.clear()
+    assert gw._wake.is_set() is False
+    gw.request_tick()
+    assert gw._wake.is_set() is True
+
+
+def test_radius_is_configurable_per_door(monkeypatch):
+    """A bigger fence buys approach time; it must come from env, not code."""
+    import importlib
+    monkeypatch.setenv("GARAGE2_RADIUS_M", "150")
+    cfg = importlib.reload(config)
+    try:
+        assert cfg.GARAGE_DOORS_BY_KEY["garage2"].radius_m == 150.0
+    finally:
+        monkeypatch.delenv("GARAGE2_RADIUS_M", raising=False)
+        importlib.reload(cfg)

@@ -137,3 +137,17 @@ def test_signed_config_is_verifiable(tmp_path, monkeypatch):
     assert tesla_jws.verify(tesla_jws.public_bytes(key), f"{h}.{p}".encode(), base64.urlsafe_b64decode(pad(s)))
     claims = json.loads(base64.urlsafe_b64decode(pad(p)))
     assert claims["aud"] == "com.tesla.fleet.TelemetryClient" and "hostname" in claims
+
+
+def test_flush_wakes_the_geofence_worker(monkeypatch):
+    """A new position must trigger evaluation immediately, not wait for the
+    worker's heartbeat — that 0-30 s wait was most of the auto-open lag."""
+    import geofence_worker as gw
+    gw._wake.clear()
+    _msg("VIN_DAD", "Location", {"latitude": 37.0, "longitude": -122.0})
+    tw._dirty.set()
+    monkeypatch.setattr(tw, "PUBLISH_MIN_INTERVAL_S", 0.0)
+    # Run one pass of the flusher body rather than the infinite loop.
+    tw.flush()
+    gw.request_tick()
+    assert gw._wake.is_set()
