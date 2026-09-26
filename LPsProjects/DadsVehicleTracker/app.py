@@ -24,6 +24,7 @@ import hmac
 import logging
 import os
 import queue
+import time
 from datetime import datetime
 from functools import wraps
 from typing import Any
@@ -34,6 +35,7 @@ from flask import (
     abort,
     flash,
     jsonify,
+    make_response,
     redirect,
     render_template,
     request,
@@ -45,6 +47,7 @@ import charging
 import config
 import door_control
 import geofence_worker
+import login_guard
 import models
 import sms
 import telemetry_worker
@@ -99,17 +102,34 @@ def create_app(start_workers: bool = True) -> Flask:
     @app.route("/login", methods=["GET", "POST"])
     def login():
         if request.method == "POST":
+            key = login_guard.client_key(request.headers, request.remote_addr)
+            remaining = login_guard.guard.locked_out(key)
+            if remaining > 0:
+                log.warning("Rejected login from locked-out %s (%.0fs left)", key, remaining)
+                resp = make_response(render_template(
+                    "login.html", lockout=int(remaining / 60) + 1), 429)
+                resp.headers["Retry-After"] = str(int(remaining))
+                return resp
+
             u = request.form.get("username", "")
             p = request.form.get("password", "")
             ok_u = hmac.compare_digest(u, config.SHARED_LOGIN_USERNAME)
             ok_p = hmac.compare_digest(p, config.SHARED_LOGIN_PASSWORD)
             if ok_u and ok_p:
+                login_guard.guard.record_success(key)
+                log.info("Login OK from %s", key)
                 session["user"] = u
                 nxt = request.args.get("next", "")
                 # Only follow relative paths; never an absolute URL.
                 if not nxt.startswith("/") or nxt.startswith("//"):
                     nxt = url_for("map_view")
                 return redirect(nxt)
+            # Cost every wrong guess real time, and more when many are
+            # arriving at once, so grinding is slow rather than free.
+            delay = login_guard.guard.delay_for_failure()
+            login_guard.guard.record_failure(
+                key, login_guard.describe(request.headers))
+            time.sleep(delay)
             flash("Invalid credentials.", "error")
         return render_template("login.html")
 

@@ -81,6 +81,13 @@
 7. **DDNS** for `telemetry.dowdsgarage.com` — home IP is `68.184.61.239` today; if the ISP rotates it, the cars lose the receiver. Cloudflare token already has DNS edit rights; a `cloudflare-ddns` container in `telemetry/docker-compose.yml` would cover it.
 8. Invite Mom and LP to the tailnet (or rely on the Funnel URL + Access).
 
+## Login hardening (added 2026-09-26)
+- The public URL is swept constantly: **660 probe requests 2026-09-12 to 09-25** for `/.env` (and `/api/.env`, `/src/.env`, `/backend/.env`, `/app/.env`, `/.env.production`), `/.git/config`, `/.git/HEAD`, a dozen `phpinfo` variants and a WordPress `rest_route` exploit. All were refused — Flask serves only declared routes plus `/static/` — but they show the host is found and indexed within hours of going public.
+- Before this, `/login` had no rate limit, no lockout and **no logging of failures**: a brute-force attempt left no trace at all.
+- `login_guard.py`: 5 failures in 5 min locks that client out for 15 min (a correct password during a lockout is still refused); every failure costs 0.5 s, plus 2 s more while global failures are above threshold. The global tier delays rather than locks, so nobody can shut the family out by spraying failures. Every failure is logged at WARNING with the client and User-Agent.
+- **Verified against the live Funnel**: external requests arrive with `X-Forwarded-For` set to the real public client IP (tested via `--resolve` to the IPv4 ingress 209.177.145.97), and tailnet requests additionally carry `Tailscale-User-Login`. So per-client limiting is meaningful rather than lumping the internet into one 127.0.0.1 bucket. `X-Forwarded-For` is still client-settable, which is what the global tier covers.
+- Not done: Cloudflare Access in front of the public URL, which would stop probes reaching the host at all. Recommended before any `vehicle_cmds` scope is ever granted.
+
 ## Charging log (added 2026-09-26)
 - `charging.py` runs a per-vehicle session state machine off the telemetry stream: a session opens on `DetailedChargeState` Charging/Starting and closes when it stops. Sessions live in SQLite (`charge_session`) from the moment they open, so a restart mid-charge loses nothing. `/charging` shows sessions, per-month totals and cost; `/api/charging` serves the same as JSON.
 - Rate: `ELECTRICITY_RATE_PER_KWH` (0.13) — flat. A time-of-use tariff would need the rate applied per interval rather than per session.
