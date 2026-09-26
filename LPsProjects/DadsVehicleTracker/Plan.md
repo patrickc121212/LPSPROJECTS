@@ -82,6 +82,9 @@
 8. Invite Mom and LP to the tailnet (or rely on the Funnel URL + Access).
 
 ## Door control — how it works now (2026-09-26)
+- **Reaction time** (fixed 2026-09-26): the geofence worker used to sleep 30 s between sweeps, a leftover from the polling era, so auto-open lagged an arrival by ~21 s. It is now event-driven — every position flush calls `geofence_worker.request_tick()` and the loop wakes in microseconds; `GEOFENCE_INTERVAL_S` (30 s) is only a heartbeat for expiring stale state. Typical arrival → pulse is now ~4 s, dominated by the cars' 5 s Location interval.
+- **Fence radius 150 m** on all three doors (`GARAGE{N}_RADIUS_M`), raised from 75 m on 2026-09-26: ~13 s of approach at 25 mph, roughly what a door needs to finish opening. Watch for false triggers if a through road passes within 150 m; drop it back if so.
+- Remaining lever if it still feels slow: drop the cars' Location `interval_seconds` from 5 to 2 in `tesla_setup.telemetry_fields()` and re-push (`python tesla_setup.py telemetry`). Costs roughly $2/month against the $10 credit.
 - `door_control.actuate(door, action)` picks, per door: local Shelly pulse -> Google Routine webhook -> dry-run.
 - `shelly.pulse()` sends `Switch.Set?id=0&on=true&toggle_after=0.5`. `toggle_after` is passed explicitly so the pulse length never depends on the device's own `auto_off` config — if that were ever cleared, a plain `on=true` would latch the relay, i.e. hold the opener's button down indefinitely.
 - **A pulse toggles the door**; open and close are the same action. There is no sensor, so `door_state` is only ever a memory of our last pulse. The UI says so on `/doors`.
