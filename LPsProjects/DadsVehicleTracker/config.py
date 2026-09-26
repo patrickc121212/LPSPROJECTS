@@ -73,6 +73,10 @@ class GarageDoor:
     # the door is CLOSED unless sensor_invert flips it.
     sensor_input: str = ""
     sensor_invert: bool = False
+    # Departure fence for auto-close. Usually much tighter than radius_m so
+    # the door starts moving while the driver can still see it. 0 = reuse
+    # radius_m.
+    close_radius_m: float = 0.0
 
 
 GARAGE_DOORS: list[GarageDoor] = [
@@ -83,6 +87,7 @@ GARAGE_DOORS: list[GarageDoor] = [
         latitude=float(os.getenv("GARAGE1_LAT", "37.7749")),
         longitude=float(os.getenv("GARAGE1_LON", "-122.4194")),
         radius_m=float(os.getenv("GARAGE1_RADIUS_M", "75")),
+        close_radius_m=float(os.getenv("GARAGE1_CLOSE_RADIUS_M") or 0),
         shelly_host=os.getenv("GARAGE1_SHELLY_HOST", ""),
         sensor_input=os.getenv("GARAGE1_SENSOR_INPUT", ""),
         sensor_invert=os.getenv("GARAGE1_SENSOR_INVERT", "0") == "1",
@@ -96,6 +101,7 @@ GARAGE_DOORS: list[GarageDoor] = [
         latitude=float(os.getenv("GARAGE2_LAT", "37.7755")),
         longitude=float(os.getenv("GARAGE2_LON", "-122.4180")),
         radius_m=float(os.getenv("GARAGE2_RADIUS_M", "75")),
+        close_radius_m=float(os.getenv("GARAGE2_CLOSE_RADIUS_M") or 0),
         shelly_host=os.getenv("GARAGE2_SHELLY_HOST", ""),
         sensor_input=os.getenv("GARAGE2_SENSOR_INPUT", ""),
         sensor_invert=os.getenv("GARAGE2_SENSOR_INVERT", "0") == "1",
@@ -109,6 +115,7 @@ GARAGE_DOORS: list[GarageDoor] = [
         latitude=float(os.getenv("GARAGE3_LAT", "37.7760")),
         longitude=float(os.getenv("GARAGE3_LON", "-122.4170")),
         radius_m=float(os.getenv("GARAGE3_RADIUS_M", "75")),
+        close_radius_m=float(os.getenv("GARAGE3_CLOSE_RADIUS_M") or 0),
         shelly_host=os.getenv("GARAGE3_SHELLY_HOST", ""),
         sensor_input=os.getenv("GARAGE3_SENSOR_INPUT", ""),
         sensor_invert=os.getenv("GARAGE3_SENSOR_INVERT", "0") == "1",
@@ -152,6 +159,21 @@ GEOFENCE_INTERVAL_S = int(os.getenv("GEOFENCE_INTERVAL_S", "30"))
 AUTO_CLOSE_ENABLED = os.getenv("AUTO_CLOSE_ENABLED", "0") == "1"
 AUTO_CLOSE_DELAY_S = int(os.getenv("AUTO_CLOSE_DELAY_S", "180"))
 
+# Close the door once the owner has PARKED at the garage and sat still.
+# Safer than the departure trigger: the door was opened seconds earlier, so
+# "it is open" is near-certain rather than a stale guess.
+PARKED_CLOSE_ENABLED = os.getenv("PARKED_CLOSE_ENABLED", "0") == "1"
+# How long the car must stay put before we close.
+PARKED_DWELL_S = int(os.getenv("PARKED_DWELL_S", "30"))
+# How close to the door's centre counts as "at the garage". Deliberately far
+# tighter than the geofence radius: idling in the driveway 100 m away, about
+# to drive out, must not trigger a close.
+PARKED_RADIUS_M = float(os.getenv("PARKED_RADIUS_M", "25"))
+# Movement below this is GPS noise, not the car moving. The cars only report
+# Location after moving 10 m (telemetry minimum_delta), so anything reported
+# already exceeds this.
+PARKED_JITTER_M = float(os.getenv("PARKED_JITTER_M", "8"))
+
 # SMS fallback cadence — if a driver hasn't checked in for this long,
 # the message is also pushed over Twilio SMS.
 SMS_FALLBACK_AFTER_S = int(os.getenv("SMS_FALLBACK_AFTER_S", "300"))
@@ -165,6 +187,11 @@ DB_PATH = os.getenv("TRACKER_DB", "data/tracker.db")
 
 
 # --- Geofence allowlist helpers ---------------------------------------------
+
+def close_radius(door: GarageDoor) -> float:
+    """Fence used to decide the owner has left, for auto-close."""
+    return door.close_radius_m or door.radius_m
+
 
 def allowed_for_door(vehicle_key: str, door_key: str, db_allow: set[str]) -> bool:
     """Owner-per-door + allowlist override.

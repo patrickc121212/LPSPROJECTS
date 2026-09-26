@@ -257,3 +257,130 @@ def test_no_warnings_when_a_sensor_is_fitted(monkeypatch):
     d = replace(owned_by("dad"), shelly_host="10.0.0.9", sensor_input="0")
     monkeypatch.setattr(config, "GARAGE_DOORS", [d])
     assert door_control.config_warnings() == []
+
+
+# --- separate, tighter close fence -----------------------------------------
+
+def test_close_radius_defaults_to_the_open_radius():
+    d = owned_by("dad")
+    assert config.close_radius(replace(d, close_radius_m=0)) == d.radius_m
+    assert config.close_radius(replace(d, close_radius_m=40)) == 40.0
+
+
+def test_departure_uses_the_close_fence_not_the_open_fence(auto_close, monkeypatch):
+    """Leaving the tight close fence must arm auto-close even though the car
+    is still well inside the big open fence."""
+    d = replace(owned_by("dad"), radius_m=150.0, close_radius_m=40.0)
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    monkeypatch.setattr(config, "GARAGE_DOORS_BY_KEY", {d.key: d})
+    monkeypatch.setattr(config, "AUTO_CLOSE_DELAY_S", 5)
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    at_60m = at(d, 60)          # outside close fence, inside open fence
+    gw.departure_actions({"dad": at_60m}, st, now)
+    assert gw.departure_actions({"dad": at_60m}, st, now + 6)[0] == [d.key]
+
+
+def test_still_in_the_driveway_does_not_arm_the_close(auto_close, monkeypatch):
+    d = replace(owned_by("dad"), radius_m=150.0, close_radius_m=40.0)
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    monkeypatch.setattr(config, "GARAGE_DOORS_BY_KEY", {d.key: d})
+    monkeypatch.setattr(config, "AUTO_CLOSE_DELAY_S", 5)
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    at_20m = at(d, 20)          # still inside the close fence
+    gw.departure_actions({"dad": at_20m}, st, now)
+    assert gw.departure_actions({"dad": at_20m}, st, now + 600)[0] == []
+
+
+# --- close after parking ----------------------------------------------------
+
+@pytest.fixture
+def parked_close(monkeypatch):
+    monkeypatch.setattr(config, "PARKED_CLOSE_ENABLED", True)
+    monkeypatch.setattr(config, "PARKED_DWELL_S", 30)
+    monkeypatch.setattr(config, "PARKED_RADIUS_M", 25.0)
+    monkeypatch.setattr(config, "PARKED_JITTER_M", 8.0)
+    monkeypatch.setattr(door_control, "DOOR_OPEN_TTL_S", 3600)
+    return config
+
+
+def test_stationary_clock_starts_and_runs(parked_close):
+    d = owned_by("dad")
+    p = at(d, 2)
+    now = 1_000_000.0
+    assert gw.stationary_seconds("dad", p["latitude"], p["longitude"], now) == 0.0
+    assert gw.stationary_seconds("dad", p["latitude"], p["longitude"], now + 25) == 25.0
+
+
+def test_real_movement_resets_the_stationary_clock(parked_close):
+    d = owned_by("dad")
+    now = 1_000_000.0
+    gw.stationary_seconds("dad", *_ll(at(d, 2)), now)
+    assert gw.stationary_seconds("dad", *_ll(at(d, 2)), now + 20) == 20.0
+    # Moved 30 m: that is the car, not GPS noise.
+    assert gw.stationary_seconds("dad", *_ll(at(d, 32)), now + 25) == 0.0
+
+
+def test_gps_jitter_does_not_reset_the_clock(parked_close):
+    d = owned_by("dad")
+    now = 1_000_000.0
+    gw.stationary_seconds("dad", *_ll(at(d, 2)), now)
+    assert gw.stationary_seconds("dad", *_ll(at(d, 6)), now + 20) == 20.0
+
+
+def test_parked_at_garage_closes_after_the_dwell(parked_close):
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    parked = {"dad": at(d, 3)}
+    assert gw.doors_to_close_after_parking(parked, st, now) == []
+    assert gw.doors_to_close_after_parking(parked, st, now + 29) == []
+    assert gw.doors_to_close_after_parking(parked, st, now + 31) == [d.key]
+    # Once only.
+    assert gw.doors_to_close_after_parking(parked, st, now + 60) == []
+
+
+def test_idling_in_the_driveway_is_not_parked_at_the_garage(parked_close):
+    """100 m out is inside the geofence but nowhere near the door; closing
+    on someone about to drive away would be wrong."""
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    driveway = {"dad": at(d, 100)}
+    gw.doors_to_close_after_parking(driveway, st, now)
+    assert gw.doors_to_close_after_parking(driveway, st, now + 600) == []
+
+
+def test_parked_close_skipped_when_door_is_not_open(parked_close):
+    d = owned_by("dad")
+    now = 1_000_000.0
+    shut = {d.key: {"door_key": d.key, "is_open": 0, "updated_at": now}}
+    parked = {"dad": at(d, 3)}
+    gw.doors_to_close_after_parking(parked, shut, now)
+    assert gw.doors_to_close_after_parking(parked, shut, now + 600) == []
+
+
+def test_driving_away_rearms_parked_close(parked_close):
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    parked = {"dad": at(d, 3)}
+    gw.doors_to_close_after_parking(parked, st, now)
+    assert gw.doors_to_close_after_parking(parked, st, now + 31) == [d.key]
+    gw.doors_to_close_after_parking({"dad": at(d, 400)}, st, now + 60)   # left
+    gw.doors_to_close_after_parking(parked, st, now + 120)               # back, clock restarts
+    assert gw.doors_to_close_after_parking(parked, st, now + 160) == [d.key]
+
+
+def test_parked_close_disabled_by_default(monkeypatch):
+    d = owned_by("dad")
+    models.upsert_door_state(d.key, True)
+    models.upsert_vehicle_state("dad", *_ll(at(d, 3)), 0, 80, True)
+    assert config.PARKED_CLOSE_ENABLED is False
+    gw._tick()
+    assert {x["door_key"]: x["is_open"] for x in models.all_door_states()}[d.key] == 1
+
+
+def _ll(p):
+    return p["latitude"], p["longitude"]

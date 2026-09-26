@@ -21,6 +21,30 @@ os.environ.setdefault("SMS_FALLBACK_AFTER_S", "300")
 os.environ["APP_USERNAME"] = "family"
 os.environ["APP_PASSWORD"] = "testpw"
 
+# Pin everything the behaviour depends on. config.py calls load_dotenv(),
+# which does NOT override values already in os.environ, so setting them here
+# keeps the suite deterministic no matter what the live .env says — turning
+# auto-close on in production must not change test outcomes.
+for _k, _v in {
+    "AUTO_CLOSE_ENABLED": "0",
+    "AUTO_CLOSE_DELAY_S": "180",
+    "PARKED_CLOSE_ENABLED": "0",
+    "PARKED_DWELL_S": "30",
+    "PARKED_RADIUS_M": "25",
+    "PARKED_JITTER_M": "8",
+    "DOOR_OPEN_TTL_S": "600",
+    "GEOFENCE_INTERVAL_S": "30",
+    "TESLA_POLL_INTERVAL_S": "30",
+    "VEHICLE_SOURCE": "sim",
+    "GOOGLE_ROUTINE_WEBHOOK_URL": "",
+}.items():
+    os.environ[_k] = _v
+for _n in ("1", "2", "3"):
+    os.environ[f"GARAGE{_n}_RADIUS_M"] = "75"
+    os.environ[f"GARAGE{_n}_CLOSE_RADIUS_M"] = ""
+    os.environ[f"GARAGE{_n}_SHELLY_HOST"] = ""
+    os.environ[f"GARAGE{_n}_SENSOR_INPUT"] = ""
+
 import config  # noqa: E402
 import models  # noqa: E402
 import door_control  # noqa: E402
@@ -40,6 +64,8 @@ def fresh_db(tmp_path, monkeypatch):
     geofence_worker._inside.clear()
     geofence_worker._away_since.clear()
     geofence_worker._auto_closed.clear()
+    geofence_worker._still_ref.clear()
+    geofence_worker._parked_closed.clear()
     door_control._sensor_cache.clear()
     yield db_file
 

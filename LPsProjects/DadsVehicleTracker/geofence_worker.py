@@ -48,6 +48,11 @@ _away_since: dict[str, float] = {}
 # Doors already auto-closed for the current departure; cleared on return so
 # one trip produces at most one close pulse.
 _auto_closed: set[str] = set()
+# vehicle_key -> (lat, lon, since) of where it has been sitting. Reset when
+# it moves further than PARKED_JITTER_M from that reference.
+_still_ref: dict[str, tuple[float, float, float]] = {}
+# Doors closed because the owner parked; cleared when the car moves again.
+_parked_closed: set[str] = set()
 
 # (vehicle_key, door_key) -> last fire timestamp
 _last_fire: dict[tuple[str, str], float] = {}
@@ -116,19 +121,66 @@ def evaluate(
 
 def _owner_away_seconds(door: config.GarageDoor, states: dict[str, dict[str, Any]],
                         now: float) -> float | None:
-    """How long the door's owner has been outside the fence, or None if they
-    are inside / have no fix. Also maintains the per-door away timer."""
+    """How long the owner has been outside the door's CLOSE fence
+    (config.close_radius), or None if they are inside / have no fix. Also
+    maintains the per-door away timer."""
     s = states.get(door.owner_key)
     if not s or s.get("latitude") is None or s.get("longitude") is None:
         return None  # no fix: don't start or advance the timer
+    # Departure uses its own, usually tighter, fence: crossing it should be
+    # visible in the mirror rather than happening a street away.
     inside = haversine_m(s["latitude"], s["longitude"],
-                         door.latitude, door.longitude) <= door.radius_m
+                         door.latitude, door.longitude) <= config.close_radius(door)
     if inside:
         _away_since.pop(door.key, None)
         _auto_closed.discard(door.key)
         return None
     since = _away_since.setdefault(door.key, now)
     return max(0.0, now - since)
+
+
+def stationary_seconds(vehicle_key: str, lat: float, lon: float, now: float) -> float:
+    """How long this vehicle has been sitting within PARKED_JITTER_M of the
+    spot we first saw it at. Any real move resets the reference and clock."""
+    ref = _still_ref.get(vehicle_key)
+    if ref is None or haversine_m(lat, lon, ref[0], ref[1]) > config.PARKED_JITTER_M:
+        _still_ref[vehicle_key] = (lat, lon, now)
+        return 0.0
+    return max(0.0, now - ref[2])
+
+
+def doors_to_close_after_parking(
+    states: dict[str, dict[str, Any]],
+    door_states: dict[str, dict],
+    now: float,
+) -> list[str]:
+    """Doors whose owner has pulled in and sat still long enough.
+
+    Requires the car to be within PARKED_RADIUS_M of the door itself, not
+    merely inside the geofence — otherwise sitting in the driveway about to
+    leave would shut the door on them.
+    """
+    out: list[str] = []
+    for door in config.GARAGE_DOORS:
+        s = states.get(door.owner_key)
+        if not s or s.get("latitude") is None or s.get("longitude") is None:
+            continue
+        still_s = stationary_seconds(door.owner_key, s["latitude"], s["longitude"], now)
+        at_garage = haversine_m(s["latitude"], s["longitude"],
+                                door.latitude, door.longitude) <= config.PARKED_RADIUS_M
+        if not at_garage:
+            _parked_closed.discard(door.key)
+            continue
+        if still_s < config.PARKED_DWELL_S:
+            _parked_closed.discard(door.key)
+            continue
+        if door.key in _parked_closed:
+            continue
+        if not door_control.is_open(door, door_states, now):
+            continue
+        _parked_closed.add(door.key)
+        out.append(door.key)
+    return out
 
 
 def departure_actions(
@@ -178,11 +230,16 @@ def _tick() -> None:
     changed = False
 
     to_close, to_assume = departure_actions(states, door_states, now)
+    if config.PARKED_CLOSE_ENABLED:
+        for key in doors_to_close_after_parking(states, door_states, now):
+            if key not in to_close:
+                to_close.append(key)
 
     for door_key in to_close:
         door = config.GARAGE_DOORS_BY_KEY[door_key]
         how = "sensor" if door_control.has_sensor(door) else "inferred state"
-        log.info("Auto-closing %s: owner away and door open per %s", door.label, how)
+        why = "owner parked at the garage" if door_key in _parked_closed else "owner away"
+        log.info("Auto-closing %s: %s and door open per %s", door.label, why, how)
         result = door_control.actuate(door, "close")
         if result["ok"]:
             models.upsert_door_state(door_key, False)
