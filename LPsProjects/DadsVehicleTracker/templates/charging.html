@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Charging — Tesla Tracker{% endblock %}
+{% block content %}
+<section class="charging-page">
+  <header class="inbox-head">
+    <h1>Charging</h1>
+    <form method="get" class="me-picker">
+      <label>Vehicle
+        <select name="as" onchange="this.form.submit()">
+          <option value="">All</option>
+          {% for v in vehicles %}
+            <option value="{{ v.key }}" {% if v.key == me %}selected{% endif %}>{{ v.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </form>
+  </header>
+
+  <div class="stat-row">
+    <div class="stat"><span class="n">{{ summary.sessions }}</span><span class="l">sessions</span></div>
+    <div class="stat"><span class="n">{{ '%.1f'|format(summary.kwh) }}</span><span class="l">kWh</span></div>
+    <div class="stat"><span class="n">{{ currency }}{{ '%.2f'|format(summary.cost) }}</span><span class="l">total cost</span></div>
+    <div class="stat"><span class="n">{{ summary.home }}/{{ summary.away }}</span><span class="l">home / away</span></div>
+  </div>
+  <p class="muted">Costed at {{ currency }}{{ '%.3f'|format(rate) }} per kWh.</p>
+
+  {% if months %}
+  <h2>By month</h2>
+  <div class="table-wrap">
+    <table class="grid">
+      <thead><tr><th>Month</th><th>Vehicle</th><th class="r">Sessions</th><th class="r">kWh</th><th class="r">Cost</th></tr></thead>
+      <tbody>
+        {% for m in months %}
+          {% set v = vehicles|selectattr('key','equalto',m.vehicle_key)|first %}
+          <tr>
+            <td>{{ m.month }}</td>
+            <td>{{ v.label if v else m.vehicle_key }}</td>
+            <td class="r">{{ m.sessions }}</td>
+            <td class="r">{{ '%.1f'|format(m.kwh or 0) }}</td>
+            <td class="r">{{ currency }}{{ '%.2f'|format(m.cost or 0) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <h2>Sessions</h2>
+  {% if not sessions %}
+    <p class="muted">No charging recorded yet. A session appears here as soon as a car starts charging.</p>
+  {% endif %}
+  <div class="table-wrap">
+    <table class="grid">
+      <thead>
+        <tr><th>Started</th><th>Vehicle</th><th>Where</th><th class="r">Battery</th>
+            <th class="r">kWh</th><th class="r">Peak</th><th class="r">Cost</th></tr>
+      </thead>
+      <tbody>
+        {% for s in sessions %}
+          {% set v = vehicles|selectattr('key','equalto',s.vehicle_key)|first %}
+          <tr class="{% if not s.ended_at %}charging-now{% endif %}">
+            <td>{{ s.started_at|localtime }}{% if not s.ended_at %} <span class="badge">charging</span>{% endif %}</td>
+            <td><span class="dot" style="--c: {{ v.color if v else '#888' }}"></span> {{ v.label if v else s.vehicle_key }}</td>
+            <td>{% if s.at_home == 1 %}home{% elif s.at_home == 0 %}away{% else %}—{% endif %}</td>
+            <td class="r">{% if s.start_pct is not none %}{{ s.start_pct }}%{% if s.end_pct is not none %} → {{ s.end_pct }}%{% endif %}{% else %}—{% endif %}</td>
+            <td class="r">{% if s.kwh is not none %}{{ '%.2f'|format(s.kwh) }}{% else %}—{% endif %}</td>
+            <td class="r">{% if s.peak_kw %}{{ '%.1f'|format(s.peak_kw) }} kW{% else %}—{% endif %}</td>
+            <td class="r">{% if s.cost is not none %}{{ currency }}{{ '%.2f'|format(s.cost) }}{% else %}—{% endif %}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

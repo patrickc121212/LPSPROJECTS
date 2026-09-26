@@ -109,3 +109,21 @@ main { padding: 0; }
 .door-card fieldset { margin-top: 10px; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px; }
 .door-card fieldset label { display: block; padding: 2px 0; }
 .door-card .save { margin-top: 8px; padding: 6px 14px; background: #2563eb; color: #fff; border: 0; border-radius: 6px; cursor: pointer; }
+
+/* --- Charging page --- */
+.stat-row { display: flex; flex-wrap: wrap; gap: .75rem; margin: 1rem 0 .25rem; }
+.stat { background: #fff; border: 1px solid #e3e6ea; border-radius: 8px;
+        padding: .6rem .9rem; min-width: 7rem; }
+.stat .n { display: block; font-size: 1.35rem; font-weight: 600; }
+.stat .l { display: block; font-size: .78rem; color: #6b7280; text-transform: uppercase;
+           letter-spacing: .04em; }
+.table-wrap { overflow-x: auto; }
+table.grid { border-collapse: collapse; width: 100%; font-size: .92rem; }
+table.grid th, table.grid td { padding: .45rem .6rem; border-bottom: 1px solid #eceff2;
+                               text-align: left; white-space: nowrap; }
+table.grid th { font-size: .78rem; text-transform: uppercase; letter-spacing: .04em;
+                color: #6b7280; }
+table.grid td.r, table.grid th.r { text-align: right; }
+tr.charging-now { background: #f0fdf4; }
+.badge { background: #16a34a; color: #fff; border-radius: 999px; padding: 0 .45rem;
+         font-size: .7rem; vertical-align: middle; }

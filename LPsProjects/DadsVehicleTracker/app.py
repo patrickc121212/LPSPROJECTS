@@ -41,6 +41,7 @@ from flask import (
     url_for,
 )
 
+import charging
 import config
 import door_control
 import geofence_worker
@@ -158,12 +159,42 @@ def create_app(start_workers: bool = True) -> Flask:
             toggle_doors=[d.key for d in config.GARAGE_DOORS if door_control.is_toggle(d)],
         )
 
+    @app.route("/charging")
+    @login_required
+    def charging_view():
+        who = request.args.get("as", "")
+        who = who if who in config.VEHICLES_BY_KEY else ""
+        sessions = models.list_charge_sessions(limit=200, vehicle_key=who or None)
+        return render_template(
+            "charging.html",
+            vehicles=config.VEHICLES,
+            me=who,
+            sessions=sessions,
+            summary=charging.summary(sessions),
+            months=models.charge_totals_by_month(),
+            rate=config.ELECTRICITY_RATE_PER_KWH,
+            currency=config.CURRENCY_SYMBOL,
+        )
+
     # --- JSON API ---------------------------------------------------------
 
     @app.route("/api/vehicles")
     @login_required
     def api_vehicles() -> Any:
         return jsonify(models.all_vehicle_states())
+
+    @app.route("/api/charging")
+    @login_required
+    def api_charging() -> Any:
+        who = request.args.get("as", "")
+        who = who if who in config.VEHICLES_BY_KEY else None
+        sessions = models.list_charge_sessions(limit=200, vehicle_key=who)
+        return jsonify({
+            "rate_per_kwh": config.ELECTRICITY_RATE_PER_KWH,
+            "summary": charging.summary(sessions),
+            "by_month": models.charge_totals_by_month(),
+            "sessions": sessions,
+        })
 
     @app.route("/api/doors")
     @login_required

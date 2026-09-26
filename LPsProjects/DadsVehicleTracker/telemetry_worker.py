@@ -23,6 +23,7 @@ import threading
 import time
 from typing import Any
 
+import charging
 import config
 import geofence_worker
 import models
@@ -114,6 +115,20 @@ def apply_signal(vehicle_key: str, field: str, value: Any) -> dict[str, Any]:
                 row["speed_mph"] = 0.0
         elif field == "DetailedChargeState":
             row["charge_state"] = str(value).replace("DetailedChargeState", "") if value is not None else None
+        elif field == "ACChargingEnergyIn":
+            row["ac_energy"] = _num(value)
+        elif field == "DCChargingEnergyIn":
+            row["dc_energy"] = _num(value)
+        elif field == "ACChargingPower":
+            row["ac_power_kw"] = _num(value)
+            # Grid-side power is what we report; see charging._counter.
+            row["power_kw"] = _num(value)
+        elif field == "DCChargingPower":
+            row["dc_power_kw"] = _num(value)
+            if not row.get("ac_power_kw"):
+                row["power_kw"] = _num(value)
+        elif field == "LifetimeEnergyChargedKwh":
+            row["lifetime_kwh"] = _num(value)
         elif field == "DriverSeatBelt":
             row["seatbelt"] = _buckle(value)
         elif field == "VehicleName":
@@ -168,7 +183,27 @@ def flush() -> None:
             bool(r.get("online", False)),
             seatbelt=r.get("seatbelt"),
         )
+    _update_charging(rows)
     bus.publish("vehicles", models.all_vehicle_states())
+
+
+def _at_home(row: dict) -> bool | None:
+    """Whether this position is at any of the garages."""
+    from geofence_worker import haversine_m
+    lat, lon = row.get("latitude"), row.get("longitude")
+    if lat is None or lon is None:
+        return None
+    return any(haversine_m(lat, lon, d.latitude, d.longitude) <= d.radius_m
+               for d in config.GARAGE_DOORS)
+
+
+def _update_charging(rows: list[dict]) -> None:
+    now = time.time()
+    for r in rows:
+        try:
+            charging.observe(r["vehicle_key"], r, now, _at_home(r))
+        except Exception as exc:  # noqa: BLE001 — never let this break the map
+            log.exception("charging update failed for %s: %s", r.get("vehicle_key"), exc)
 
 
 def _flusher() -> None:

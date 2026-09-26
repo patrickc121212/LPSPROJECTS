@@ -180,6 +180,11 @@ PARKED_JITTER_M = float(os.getenv("PARKED_JITTER_M", "8"))
 DEPART_OPEN_ENABLED = os.getenv("DEPART_OPEN_ENABLED", "0") == "1"
 DEPART_OPEN_RADIUS_M = float(os.getenv("DEPART_OPEN_RADIUS_M", "25"))
 
+# Electricity tariff for the charging log. Flat rate; a time-of-use tariff
+# would need the rate applied per interval rather than per session.
+ELECTRICITY_RATE_PER_KWH = float(os.getenv("ELECTRICITY_RATE_PER_KWH", "0.13"))
+CURRENCY_SYMBOL = os.getenv("CURRENCY_SYMBOL", "$")
+
 # SMS fallback cadence — if a driver hasn't checked in for this long,
 # the message is also pushed over Twilio SMS.
 SMS_FALLBACK_AFTER_S = int(os.getenv("SMS_FALLBACK_AFTER_S", "300"))

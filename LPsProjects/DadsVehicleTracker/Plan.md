@@ -81,6 +81,14 @@
 7. **DDNS** for `telemetry.dowdsgarage.com` — home IP is `68.184.61.239` today; if the ISP rotates it, the cars lose the receiver. Cloudflare token already has DNS edit rights; a `cloudflare-ddns` container in `telemetry/docker-compose.yml` would cover it.
 8. Invite Mom and LP to the tailnet (or rely on the Funnel URL + Access).
 
+## Charging log (added 2026-09-26)
+- `charging.py` runs a per-vehicle session state machine off the telemetry stream: a session opens on `DetailedChargeState` Charging/Starting and closes when it stops. Sessions live in SQLite (`charge_session`) from the moment they open, so a restart mid-charge loses nothing. `/charging` shows sessions, per-month totals and cost; `/api/charging` serves the same as JSON.
+- Rate: `ELECTRICITY_RATE_PER_KWH` (0.13) — flat. A time-of-use tariff would need the rate applied per interval rather than per session.
+- **Energy measurement, learned the hard way from live data:**
+  - `LifetimeEnergyChargedKwh` is *not* reported by these cars, so the per-session counters do the work. The lifetime path is still preferred when present, since it is monotonic.
+  - The car reports **both** `ACChargingEnergyIn` and `DCChargingEnergyIn` simultaneously and both climb — AC is energy drawn from the wall, DC is what reaches the battery after onboard-charger losses (observed 8.70 vs 7.16 kWh). They are not two halves of a total; summing them bills ~1.8x. We bill the **AC/grid-side** figure, falling back to DC only for DC fast charging where that is what the meter bills.
+  - Same for power: prefer `ACChargingPower` over `DCChargingPower` rather than whichever message arrived last.
+
 ## Door control — how it works now (2026-09-26)
 - **Auto-close on departure — ENABLED 2026-09-26 at Patrick's explicit request, risk accepted.** Once the door's owner has been outside the fence for `AUTO_CLOSE_DELAY_S` (180 s) and the door is considered open, we pulse it shut, once per departure. **Without a position sensor this acts on a belief.** The common wrong case is the driver closing the door with HomeLink or the wall button on the way out: our belief still says open, the pulse toggles, and the garage is left OPEN at an empty house. A wired reed switch removes this entirely — `door_control.is_open()` already prefers the sensor and the code needs no change beyond setting `GARAGE{N}_SENSOR_INPUT`.
 - **Open when the owner buckles up** (`DEPART_OPEN_ENABLED`, within `DEPART_OPEN_RADIUS_M` 25 m): the earliest signal that is unambiguous about intent — a driver in the seat might be fetching something, nobody belts in without leaving. A false open self-corrects, because unbuckling hands the door back to the parked-close rule. Dwell-close is suppressed while belted so the two rules cannot fight.

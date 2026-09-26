@@ -58,7 +58,27 @@ CREATE TABLE IF NOT EXISTS read_receipt (
     last_seen_at   REAL
 );
 
+CREATE TABLE IF NOT EXISTS charge_session (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    vehicle_key    TEXT NOT NULL,
+    started_at     REAL NOT NULL,
+    ended_at       REAL,            -- NULL while charging
+    start_pct      INTEGER,
+    end_pct        INTEGER,
+    kwh            REAL,            -- energy delivered, filled in when it ends
+    cost           REAL,
+    at_home        INTEGER,         -- 1 home, 0 away, NULL unknown
+    peak_kw        REAL,
+    source         TEXT,            -- how kwh was derived: lifetime | counter
+    -- running values kept so a restart mid-session loses nothing
+    lifetime_start REAL,
+    lifetime_last  REAL,
+    counter_last   REAL
+);
+
 CREATE INDEX IF NOT EXISTS idx_inbox_recipient ON inbox(recipient_key, read_at);
+CREATE INDEX IF NOT EXISTS idx_charge_vehicle ON charge_session(vehicle_key, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_charge_open ON charge_session(vehicle_key, ended_at);
 """
 
 
@@ -230,6 +250,75 @@ def last_seen(driver_key: str) -> float | None:
             "SELECT last_seen_at FROM read_receipt WHERE driver_key = ?", (driver_key,)
         ).fetchone()
     return None if row is None else row["last_seen_at"]
+
+
+# --- Charging sessions -----------------------------------------------------
+
+def open_charge_session(vehicle_key: str, started_at: float, start_pct: int | None,
+                        at_home: bool | None, lifetime_start: float | None) -> int:
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO charge_session(vehicle_key, started_at, start_pct, at_home, "
+            "lifetime_start, lifetime_last, peak_kw) VALUES (?, ?, ?, ?, ?, ?, 0)",
+            (vehicle_key, started_at, start_pct,
+             None if at_home is None else int(at_home), lifetime_start, lifetime_start),
+        )
+        return cur.lastrowid
+
+
+def get_open_charge_session(vehicle_key: str) -> dict | None:
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM charge_session WHERE vehicle_key = ? AND ended_at IS NULL "
+            "ORDER BY id DESC LIMIT 1", (vehicle_key,)
+        ).fetchone()
+    return None if row is None else dict(row)
+
+
+def update_charge_session(session_id: int, **fields) -> None:
+    """Update only the columns given; unknown keys are ignored deliberately
+    so a caller can pass a partial snapshot."""
+    allowed = {"end_pct", "peak_kw", "lifetime_last", "counter_last"}
+    sets = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    if not sets:
+        return
+    clause = ", ".join(f"{k} = ?" for k in sets)
+    with db() as conn:
+        conn.execute(f"UPDATE charge_session SET {clause} WHERE id = ?",
+                     (*sets.values(), session_id))
+
+
+def close_charge_session(session_id: int, ended_at: float, kwh: float | None,
+                         cost: float | None, source: str | None) -> None:
+    with db() as conn:
+        conn.execute(
+            "UPDATE charge_session SET ended_at = ?, kwh = ?, cost = ?, source = ? WHERE id = ?",
+            (ended_at, kwh, cost, source, session_id),
+        )
+
+
+def list_charge_sessions(limit: int = 100, vehicle_key: str | None = None) -> list[dict]:
+    q = "SELECT * FROM charge_session"
+    args: list = []
+    if vehicle_key:
+        q += " WHERE vehicle_key = ?"
+        args.append(vehicle_key)
+    q += " ORDER BY started_at DESC LIMIT ?"
+    args.append(limit)
+    with db() as conn:
+        return [dict(r) for r in conn.execute(q, args).fetchall()]
+
+
+def charge_totals_by_month() -> list[dict]:
+    """Completed sessions aggregated per month per vehicle."""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT vehicle_key, strftime('%Y-%m', started_at, 'unixepoch', 'localtime') AS month, "
+            "COUNT(*) AS sessions, SUM(kwh) AS kwh, SUM(cost) AS cost "
+            "FROM charge_session WHERE ended_at IS NOT NULL AND kwh IS NOT NULL "
+            "GROUP BY vehicle_key, month ORDER BY month DESC, vehicle_key"
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # --- Allowlist -------------------------------------------------------------
