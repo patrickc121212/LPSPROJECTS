@@ -184,6 +184,7 @@ def flush() -> None:
             r.get("speed_mph"), r.get("battery_pct"),
             bool(r.get("online", False)),
             seatbelt=r.get("seatbelt"),
+            gear=r.get("gear"),
         )
     _update_trips(rows)
     _update_charging(rows)

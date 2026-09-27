@@ -37,6 +37,11 @@ def _advance(monkeypatch, seconds):
     monkeypatch.setattr(gw.time, "time", lambda: frozen)
 
 
+def _parked_at(door, offset_m=3, belt="Unlatched", gear="P"):
+    """A snapshot of a car sitting at the garage, as the car reports it."""
+    return {"dad": {**at(door, offset_m), "seatbelt": belt, "gear": gear}}
+
+
 def _open_state(door, now, age=0.0):
     return {door.key: {"door_key": door.key, "is_open": 1, "updated_at": now - age}}
 
@@ -333,7 +338,7 @@ def test_parked_at_garage_closes_after_the_dwell(parked_close):
     d = owned_by("dad")
     now = 1_000_000.0
     st = _open_state(d, now)
-    parked = {"dad": at(d, 3)}
+    parked = _parked_at(d)
     assert gw.doors_to_close_after_parking(parked, st, now) == []
     assert gw.doors_to_close_after_parking(parked, st, now + 29) == []
     assert gw.doors_to_close_after_parking(parked, st, now + 31) == [d.key]
@@ -347,7 +352,7 @@ def test_idling_in_the_driveway_is_not_parked_at_the_garage(parked_close):
     d = owned_by("dad")
     now = 1_000_000.0
     st = _open_state(d, now)
-    driveway = {"dad": at(d, 100)}
+    driveway = _parked_at(d, 100)
     gw.doors_to_close_after_parking(driveway, st, now)
     assert gw.doors_to_close_after_parking(driveway, st, now + 600) == []
 
@@ -356,7 +361,7 @@ def test_parked_close_skipped_when_door_is_not_open(parked_close):
     d = owned_by("dad")
     now = 1_000_000.0
     shut = {d.key: {"door_key": d.key, "is_open": 0, "updated_at": now}}
-    parked = {"dad": at(d, 3)}
+    parked = _parked_at(d)
     gw.doors_to_close_after_parking(parked, shut, now)
     assert gw.doors_to_close_after_parking(parked, shut, now + 600) == []
 
@@ -365,10 +370,10 @@ def test_driving_away_rearms_parked_close(parked_close):
     d = owned_by("dad")
     now = 1_000_000.0
     st = _open_state(d, now)
-    parked = {"dad": at(d, 3)}
+    parked = _parked_at(d)
     gw.doors_to_close_after_parking(parked, st, now)
     assert gw.doors_to_close_after_parking(parked, st, now + 31) == [d.key]
-    gw.doors_to_close_after_parking({"dad": at(d, 400)}, st, now + 60)   # left
+    gw.doors_to_close_after_parking(_parked_at(d, 400, gear="D"), st, now + 60)   # left
     gw.doors_to_close_after_parking(parked, st, now + 120)               # back, clock restarts
     assert gw.doors_to_close_after_parking(parked, st, now + 160) == [d.key]
 
@@ -489,11 +494,11 @@ def test_buckled_suppresses_the_parked_close(depart_open, parked_close):
     d = owned_by("dad")
     now = 1_000_000.0
     open_now = _open_state(d, now)
-    belted = _belted(d)
+    belted = _parked_at(d, belt="Latched")
     gw.doors_to_close_after_parking(belted, open_now, now)
     assert gw.doors_to_close_after_parking(belted, open_now, now + 600) == []
     # Unbuckle and the dwell rule takes over again.
-    unbuckled = _belted(d, belt="Unlatched")
+    unbuckled = _parked_at(d, belt="Unlatched")
     gw.doors_to_close_after_parking(unbuckled, open_now, now + 601)
     assert gw.doors_to_close_after_parking(unbuckled, open_now, now + 640) == [d.key]
 
@@ -537,12 +542,12 @@ def test_close_cannot_follow_an_open_within_the_cooldown(monkeypatch):
     now = 1_000_000.0
 
     # Car has been parked for ages, so the dwell clock is long satisfied.
-    parked = {"dad": {**at(d, 3), "seatbelt": "Unlatched"}}
+    parked = _parked_at(d)
     gw.doors_to_close_after_parking(parked, _shut(d, now), now - 5000)
     gw.doors_to_close_after_parking(parked, _shut(d, now), now)
 
     # Buckle up: the door opens.
-    belted = {"dad": {**at(d, 3), "seatbelt": "Latched"}}
+    belted = _parked_at(d, belt="Latched")
     assert gw.doors_to_open_for_departure(belted, _shut(d, now), now) == [d.key]
     door_control.record_action(d.key, now)
 
@@ -561,11 +566,11 @@ def test_departure_open_restarts_the_dwell_clock(monkeypatch):
     monkeypatch.setattr(door_control, "DOOR_OPEN_TTL_S", 3600)
     d = owned_by("dad")
     now = 1_000_000.0
-    parked = {"dad": {**at(d, 3), "seatbelt": "Unlatched"}}
+    parked = _parked_at(d)
     gw.doors_to_close_after_parking(parked, _shut(d, now), now - 5000)
     assert gw.stationary_seconds("dad", *_ll(at(d, 3)), now) > config.PARKED_DWELL_S
 
-    belted = {"dad": {**at(d, 3), "seatbelt": "Latched"}}
+    belted = _parked_at(d, belt="Latched")
     gw.doors_to_open_for_departure(belted, _shut(d, now), now)
     assert gw.stationary_seconds("dad", *_ll(at(d, 3)), now) == 0.0
 
@@ -600,3 +605,69 @@ def test_cooldown_ignores_a_backwards_clock():
 def test_no_cooldown_for_a_door_never_commanded():
     assert door_control.in_cooldown("garage9", 1000.0) is False
     assert door_control.seconds_since_action("garage9", 1000.0) is None
+
+
+# --- must not close while the driver is still manoeuvring --------------------
+
+def test_reversing_in_is_not_parked(parked_close):
+    """The incident: backing into the garage is a run of sub-10 m moves, so
+    the cars report no new position at all and the old position-only check
+    concluded the driver had finished. Gear says otherwise."""
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    reversing = _parked_at(d, gear="R")
+    gw.doors_to_close_after_parking(reversing, st, now)
+    assert gw.doors_to_close_after_parking(reversing, st, now + 600) == []
+
+
+def test_creeping_forward_is_not_parked(parked_close):
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    creeping = _parked_at(d, gear="D")
+    gw.doors_to_close_after_parking(creeping, st, now)
+    assert gw.doors_to_close_after_parking(creeping, st, now + 600) == []
+
+
+def test_unknown_gear_does_not_close(parked_close):
+    """A car that has never reported its gear must leave the rule off
+    rather than guess."""
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    unknown = {"dad": {**at(d, 3), "seatbelt": "Unlatched"}}
+    gw.doors_to_close_after_parking(unknown, st, now)
+    assert gw.doors_to_close_after_parking(unknown, st, now + 600) == []
+
+
+def test_dwell_starts_when_the_car_goes_into_park(parked_close):
+    """Shifting to P begins the countdown; time spent manoeuvring does not
+    count towards it."""
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    for t in range(0, 300, 30):
+        gw.doors_to_close_after_parking(_parked_at(d, gear="R"), st, now + t)
+    assert gw.doors_to_close_after_parking(_parked_at(d), st, now + 300) == []
+    assert gw.doors_to_close_after_parking(_parked_at(d), st, now + 310) == []
+    assert gw.doors_to_close_after_parking(_parked_at(d), st, now + 331) == [d.key]
+
+
+def test_gear_is_persisted_from_telemetry(monkeypatch):
+    import telemetry_worker as tw
+    monkeypatch.setattr(tw, "VIN_TO_KEY", {"VIN_DAD": "dad"})
+    tw._state.clear()
+    tw.apply_signal("dad", "Location", {"latitude": 1.0, "longitude": 2.0})
+    tw.apply_signal("dad", "Gear", "ShiftStateR")
+    tw.flush()
+    row = {r["vehicle_key"]: r for r in models.all_vehicle_states()}["dad"]
+    assert row["gear"] == "R"
+    tw._state.clear()
+
+
+def test_gear_is_not_wiped_by_a_source_that_omits_it():
+    models.upsert_vehicle_state("dad", 1.0, 2.0, 0, 80, True, gear="P")
+    models.upsert_vehicle_state("dad", 1.0, 2.0, 0, 80, True)
+    row = {r["vehicle_key"]: r for r in models.all_vehicle_states()}["dad"]
+    assert row["gear"] == "P"

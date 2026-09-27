@@ -106,6 +106,10 @@
   - Same for power: prefer `ACChargingPower` over `DCChargingPower` rather than whichever message arrived last.
 
 ## Door control — how it works now (2026-09-26)
+- **Incident 2026-09-26 19:23 — door began closing while the driver was still backing in.** Log: `19:23:10` geofence open on arrival, `19:24:17` parked-close. The 60 s action cooldown held (67 s gap), so this was not the double-pulse below — it was the parked-close rule deciding the driver had finished when they had not.
+  - Cause: the cars only report `Location` after moving **10 m** (telemetry `minimum_delta`), so a shuffle into a garage transmits **nothing**, and a position-only "hasn't moved for 30 s" check cannot tell manoeuvring from parked.
+  - Fix: **parked-close now requires the car to report gear `P`**, which is unambiguous — you cannot be reversing in while in Park. `gear` is persisted to `vehicle_state` (migration). Shifting into P starts the dwell clock, so time spent manoeuvring does not count toward it. An unknown gear leaves the rule off rather than guessing.
+  - Lesson repeated from the charging work: infer as little as possible when the car will simply tell you.
 - **Incident 2026-09-26 16:51 — door opened then stopped half way.** Log: `16:51:17 Opening Garage 2: dad buckled up` then `16:51:21 Auto-closing Garage 2: owner parked at the garage`. An opener reads a second press mid-travel as STOP, so two pulses four seconds apart left the door stuck. Cause: the parked-close dwell timer had been running since the car arrived hours earlier, so the moment the seatbelt suppression lapsed (the belt read Unlatched again) the close fired instantly, with no notion that we had just opened that door.
   - Fix 1: **`DOOR_ACTION_COOLDOWN_S` (60 s)** — no automatic pulse within a minute of the door being commanded by anything, manual presses included. A door takes 12–15 s to travel, so this covers the whole movement with margin, and it guards every path rather than only the one that failed.
   - Fix 2: a departure-open **restarts the dwell clock**, so parked-close must earn its 30 s afresh instead of being pre-satisfied.

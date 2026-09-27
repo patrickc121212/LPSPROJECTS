@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS vehicle_state (
     battery_pct    INTEGER,
     online         INTEGER,
     updated_at     REAL,
-    seatbelt       TEXT            -- "Latched" / "Unlatched" / NULL if unknown
+    seatbelt       TEXT,           -- "Latched" / "Unlatched" / NULL if unknown
+    gear           TEXT            -- "P" / "R" / "N" / "D" / NULL if unknown
 );
 
 CREATE TABLE IF NOT EXISTS door_state (
@@ -136,6 +137,7 @@ def db():
 _MIGRATIONS = [
     ("inbox", "sms_sent_at", "ALTER TABLE inbox ADD COLUMN sms_sent_at REAL"),
     ("vehicle_state", "seatbelt", "ALTER TABLE vehicle_state ADD COLUMN seatbelt TEXT"),
+    ("vehicle_state", "gear", "ALTER TABLE vehicle_state ADD COLUMN gear TEXT"),
 ]
 
 
@@ -170,14 +172,15 @@ def upsert_vehicle_state(
     battery_pct: int | None,
     online: bool,
     seatbelt: str | None = None,
+    gear: str | None = None,
 ) -> None:
     """seatbelt=None leaves any previously stored value alone, so a source
     that doesn't report it (the poller) can't wipe what telemetry knows."""
     with db() as conn:
         conn.execute(
             """
-            INSERT INTO vehicle_state(vehicle_key, latitude, longitude, speed_mph, battery_pct, online, updated_at, seatbelt)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO vehicle_state(vehicle_key, latitude, longitude, speed_mph, battery_pct, online, updated_at, seatbelt, gear)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(vehicle_key) DO UPDATE SET
                 latitude=excluded.latitude,
                 longitude=excluded.longitude,
@@ -185,17 +188,19 @@ def upsert_vehicle_state(
                 battery_pct=excluded.battery_pct,
                 online=excluded.online,
                 updated_at=excluded.updated_at,
-                seatbelt=COALESCE(excluded.seatbelt, vehicle_state.seatbelt)
+                seatbelt=COALESCE(excluded.seatbelt, vehicle_state.seatbelt),
+                gear=COALESCE(excluded.gear, vehicle_state.gear)
             """,
-            (vehicle_key, latitude, longitude, speed_mph, battery_pct, int(online), time.time(), seatbelt),
+            (vehicle_key, latitude, longitude, speed_mph, battery_pct, int(online), time.time(),
+             seatbelt, gear),
         )
 
 
 def all_vehicle_states() -> list[dict]:
     with db() as conn:
         rows = conn.execute(
-            "SELECT vehicle_key, latitude, longitude, speed_mph, battery_pct, online, updated_at, seatbelt "
-            "FROM vehicle_state"
+            "SELECT vehicle_key, latitude, longitude, speed_mph, battery_pct, online, updated_at, "
+            "seatbelt, gear FROM vehicle_state"
         ).fetchall()
     return [dict(r) for r in rows]
 

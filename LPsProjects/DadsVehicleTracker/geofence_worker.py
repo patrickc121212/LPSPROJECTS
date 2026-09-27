@@ -198,6 +198,21 @@ def doors_to_open_for_departure(
     return out
 
 
+def _parked(state: dict[str, Any] | None) -> bool:
+    """Is the car actually parked, per the car itself?
+
+    Position alone cannot answer this: the cars only report Location after
+    moving 10 m (telemetry minimum_delta), so shuffling back and forth into
+    a garage transmits nothing at all and looks identical to sitting still.
+    That is how a door once began closing on a driver mid-manoeuvre. Gear is
+    unambiguous — you cannot be backing in while in Park.
+
+    A car that has never reported its gear returns False, so the rule stays
+    off rather than guessing.
+    """
+    return bool(state) and str(state.get("gear") or "") == "P"
+
+
 def doors_to_close_after_parking(
     states: dict[str, dict[str, Any]],
     door_states: dict[str, dict],
@@ -218,6 +233,13 @@ def doors_to_close_after_parking(
             # Belted in and sitting still: they are about to drive off, not
             # done for the day. Closing here would fight the departure-open
             # rule and shut the door on them.
+            continue
+        if not _parked(s):
+            # Still in D or R, or the gear is unknown: the driver is not
+            # finished. Restart the dwell clock so the countdown begins when
+            # the car is genuinely parked.
+            _still_ref.pop(door.owner_key, None)
+            _parked_closed.discard(door.key)
             continue
         still_s = stationary_seconds(door.owner_key, s["latitude"], s["longitude"], now)
         at_garage = haversine_m(s["latitude"], s["longitude"],
