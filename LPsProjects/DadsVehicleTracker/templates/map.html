@@ -20,6 +20,20 @@
     {% endfor %}
   </ul>
 
+  {% if vehicle_alerts %}
+    <h2>Vehicle alerts</h2>
+    <ul class="alert-list">
+      {% for a in vehicle_alerts %}
+        {% set v = vehicles|selectattr('key','equalto',a.vehicle_key)|first %}
+        <li>
+          <span class="dot" style="--c: {{ v.color if v else '#888' }}"></span>
+          <strong>{{ a.label }}</strong>
+          <span class="muted">{{ v.label if v else a.vehicle_key }} · {{ a.started_at|localtime }}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
   <h2>Garage doors</h2>
   <ul class="door-list">
     {% for d in doors %}

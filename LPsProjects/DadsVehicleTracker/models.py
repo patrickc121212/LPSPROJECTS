@@ -105,6 +105,17 @@ CREATE TABLE IF NOT EXISTS position_history (
     trip_id        INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS vehicle_alert (
+    vehicle_key    TEXT NOT NULL,
+    name           TEXT NOT NULL,
+    started_at     REAL NOT NULL,
+    ended_at       REAL,            -- NULL while the alert is active
+    audiences      TEXT,
+    seen_at        REAL,
+    PRIMARY KEY (vehicle_key, name, started_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_active ON vehicle_alert(ended_at, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trip_vehicle ON trip(vehicle_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trip_open ON trip(vehicle_key, ended_at);
 CREATE INDEX IF NOT EXISTS idx_pos_vehicle_ts ON position_history(vehicle_key, ts);
@@ -288,6 +299,47 @@ def last_seen(driver_key: str) -> float | None:
             "SELECT last_seen_at FROM read_receipt WHERE driver_key = ?", (driver_key,)
         ).fetchone()
     return None if row is None else row["last_seen_at"]
+
+
+# --- Vehicle alerts ---------------------------------------------------------
+
+def upsert_alert(vehicle_key: str, name: str, started_at: float,
+                 ended_at: float | None, audiences: str) -> None:
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO vehicle_alert(vehicle_key, name, started_at, ended_at, audiences, seen_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(vehicle_key, name, started_at) DO UPDATE SET
+                ended_at=COALESCE(excluded.ended_at, vehicle_alert.ended_at),
+                audiences=excluded.audiences,
+                seen_at=excluded.seen_at
+            """,
+            (vehicle_key, name, started_at, ended_at, audiences, time.time()),
+        )
+
+
+def get_alert(vehicle_key: str, name: str, started_at: float) -> dict | None:
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM vehicle_alert WHERE vehicle_key = ? AND name = ? AND started_at = ?",
+            (vehicle_key, name, started_at)).fetchone()
+    return None if row is None else dict(row)
+
+
+def list_alerts(active_only: bool = True, vehicle_key: str | None = None,
+                limit: int = 200) -> list[dict]:
+    q = "SELECT * FROM vehicle_alert WHERE 1=1"
+    args: list = []
+    if active_only:
+        q += " AND ended_at IS NULL"
+    if vehicle_key:
+        q += " AND vehicle_key = ?"
+        args.append(vehicle_key)
+    q += " ORDER BY started_at DESC LIMIT ?"
+    args.append(limit)
+    with db() as conn:
+        return [dict(r) for r in conn.execute(q, args).fetchall()]
 
 
 # --- Trips and position history --------------------------------------------

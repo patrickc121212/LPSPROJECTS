@@ -186,7 +186,29 @@ def handle_message(topic: str, payload: bytes) -> bool:
     if parts[2] == "connectivity" and isinstance(value, dict):
         apply_connectivity(key, value)
         return True
+    if parts[2] == "alerts" and len(parts) >= 5 and parts[4] == "current":
+        _handle_alert(key, parts[3], value)
+        return False   # alerts do not change vehicle state, so no SSE flush
     return False
+
+
+def _handle_alert(vehicle_key: str, name: str, payload) -> None:
+    """Record a vehicle alert, and push the ones a driver would care about."""
+    import alerts
+    import notify
+    try:
+        fresh = alerts.observe(vehicle_key, name, payload)
+    except Exception as exc:  # noqa: BLE001 — never break the stream over this
+        log.warning("bad alert %s/%s: %s", vehicle_key, name, exc)
+        return
+    if not fresh:
+        return
+    label = config.VEHICLES_BY_KEY.get(vehicle_key)
+    who = label.label if label else vehicle_key
+    log.warning("Vehicle alert: %s — %s", who, fresh["label"])
+    notify.send(title=f"{who}: {fresh['label']}",
+                message="Tesla reported this alert on the vehicle.",
+                tags="warning")
 
 
 def flush() -> None:
@@ -262,6 +284,7 @@ def _run_mqtt() -> None:
         log.info("MQTT connected to %s:%s (rc=%s); subscribing %s/+/#", MQTT_HOST, MQTT_PORT, reason_code, TOPIC_BASE)
         client.subscribe(f"{TOPIC_BASE}/+/v/#", qos=1)
         client.subscribe(f"{TOPIC_BASE}/+/connectivity", qos=1)
+        client.subscribe(f"{TOPIC_BASE}/+/alerts/+/current", qos=1)
 
     def on_message(client, userdata, msg):
         try:

@@ -42,6 +42,7 @@ from flask import (
     url_for,
 )
 
+import alerts
 import charging
 import config
 import efficiency
@@ -184,6 +185,7 @@ def create_app(start_workers: bool = True) -> Flask:
         return render_template(
             "map.html",
             vehicles=config.VEHICLES,
+            vehicle_alerts=alerts.active(),
             vehicles_public=[v.public() for v in config.VEHICLES],
             doors=config.GARAGE_DOORS,
         )
@@ -262,6 +264,14 @@ def create_app(start_workers: bool = True) -> Flask:
     @login_required
     def api_health() -> Any:
         return jsonify(health.summary(health.check()))
+
+    @app.route("/api/alerts")
+    @login_required
+    def api_alerts() -> Any:
+        who = request.args.get("as", "")
+        who = who if who in config.VEHICLES_BY_KEY else None
+        return jsonify({"active": alerts.active(who),
+                        "recent": alerts.recent(50, who)})
 
     @app.route("/api/vehicles")
     @login_required

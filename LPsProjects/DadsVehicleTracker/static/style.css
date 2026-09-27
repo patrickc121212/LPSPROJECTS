@@ -140,3 +140,9 @@ tr.charging-now { background: #f0fdf4; }
 .health span { opacity: .85; }
 .health.critical { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
 .health.warning  { background: #fffbeb; border-color: #fde68a; color: #92400e; }
+
+/* --- Vehicle alerts --- */
+.alert-list { list-style: none; padding: 0; margin: 0 0 .8rem; }
+.alert-list li { padding: .35rem 0; border-bottom: 1px solid #eceff2; font-size: .9rem; }
+.alert-list strong { display: block; }
+.alert-list .muted { font-size: .78rem; }
