@@ -53,12 +53,24 @@
             <td class="r">{{ (t.max_speed_mph or 0)|round|int }}</td>
             <td class="r">{% if t.start_pct is not none %}{{ t.start_pct }}%{% if t.end_pct is not none %} → {{ t.end_pct }}%{% endif %}{% else %}—{% endif %}</td>
             <td class="r">{% if t.est_cost is not none %}{{ currency }}{{ '%.2f'|format(t.est_cost) }}{% else %}—{% endif %}</td>
-            <td><button class="btn show-path" data-trip="{{ t.id }}">Map</button></td>
+            <td class="nowrap">
+              <button class="btn show-path" data-trip="{{ t.id }}">Map</button>
+              {% if not t.to_name and t.end_lat %}
+                <button class="btn name-place" data-lat="{{ t.end_lat }}"
+                        data-lon="{{ t.end_lon }}">Name</button>
+              {% endif %}
+            </td>
           </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
+
+  {% if places %}
+    <p class="muted">Known places:
+      {% for pl in places %}<strong>{{ pl.name }}</strong>{% if not loop.last %}, {% endif %}{% endfor %}
+      — plus Home, which comes from the garage locations.</p>
+  {% endif %}
 
   {% if months %}
   <h2>By month</h2>
@@ -91,6 +103,26 @@
   'use strict';
   const box = document.getElementById('trip-map');
   let map = null, layer = null;
+
+  // Name the place a trip ended at, so future trips read "Home -> Work".
+  document.querySelectorAll('.name-place').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const name = prompt('What is this place called?');
+      if (!name) return;
+      fetch('/api/places', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          name: name,
+          latitude: parseFloat(btn.dataset.lat),
+          longitude: parseFloat(btn.dataset.lon)
+        })
+      }).then(r => {
+        if (!r.ok) { alert('Could not save that name.'); return; }
+        location.reload();
+      });
+    });
+  });
 
   document.querySelectorAll('.show-path').forEach(btn => {
     btn.addEventListener('click', () => {

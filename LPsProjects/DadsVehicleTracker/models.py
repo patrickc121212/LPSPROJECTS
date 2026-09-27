@@ -115,6 +115,15 @@ CREATE TABLE IF NOT EXISTS vehicle_alert (
     PRIMARY KEY (vehicle_key, name, started_at)
 );
 
+CREATE TABLE IF NOT EXISTS place (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    name           TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    latitude       REAL NOT NULL,
+    longitude      REAL NOT NULL,
+    radius_m       REAL NOT NULL,
+    created_at     REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_alert_active ON vehicle_alert(ended_at, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trip_vehicle ON trip(vehicle_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trip_open ON trip(vehicle_key, ended_at);
@@ -299,6 +308,44 @@ def last_seen(driver_key: str) -> float | None:
             "SELECT last_seen_at FROM read_receipt WHERE driver_key = ?", (driver_key,)
         ).fetchone()
     return None if row is None else row["last_seen_at"]
+
+
+# --- Named places -----------------------------------------------------------
+
+def upsert_place(name: str, latitude: float, longitude: float,
+                 radius_m: float) -> int:
+    """Add a place, or move one that already has this name."""
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO place(name, latitude, longitude, radius_m, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                latitude=excluded.latitude,
+                longitude=excluded.longitude,
+                radius_m=excluded.radius_m
+            """,
+            (name, latitude, longitude, radius_m, time.time()),
+        )
+        row = conn.execute("SELECT id FROM place WHERE name = ?", (name,)).fetchone()
+        return row["id"]
+
+
+def get_place(place_id: int) -> dict | None:
+    with db() as conn:
+        row = conn.execute("SELECT * FROM place WHERE id = ?", (place_id,)).fetchone()
+    return None if row is None else dict(row)
+
+
+def list_places() -> list[dict]:
+    with db() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM place ORDER BY name").fetchall()]
+
+
+def delete_place(place_id: int) -> None:
+    with db() as conn:
+        conn.execute("DELETE FROM place WHERE id = ?", (place_id,))
 
 
 # --- Vehicle alerts ---------------------------------------------------------

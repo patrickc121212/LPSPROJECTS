@@ -52,6 +52,7 @@ import geofence_worker
 import health
 import login_guard
 import models
+import places
 import sms
 import telemetry_worker
 import tesla_poller
@@ -245,8 +246,7 @@ def create_app(start_workers: bool = True) -> Flask:
         months = efficiency.by_month()
         rates = {v.key: efficiency.cost_per_mile(v.key, months) for v in config.VEHICLES}
         for t in rows:
-            t["from_name"] = trips.place_name(t.get("start_lat"), t.get("start_lon"))
-            t["to_name"] = trips.place_name(t.get("end_lat"), t.get("end_lon"))
+            places.label_trip(t)
             t["est_cost"] = efficiency.estimate_trip_cost(t, rates)
         return render_template(
             "trips.html",
@@ -256,6 +256,7 @@ def create_app(start_workers: bool = True) -> Flask:
             summary=trips.summary(rows),
             months=models.trip_totals_by_month(),
             currency=config.CURRENCY_SYMBOL,
+            places=models.list_places(),
         )
 
     # --- JSON API ---------------------------------------------------------
@@ -264,6 +265,27 @@ def create_app(start_workers: bool = True) -> Flask:
     @login_required
     def api_health() -> Any:
         return jsonify(health.summary(health.check()))
+
+    @app.route("/api/places", methods=["GET", "POST"])
+    @admin_required
+    def api_places() -> Any:
+        """Named places reveal routines, so they sit behind the admin login
+        alongside the trip history they annotate."""
+        if request.method == "POST":
+            data = request.get_json(force=True, silent=True) or {}
+            saved = places.add(data.get("name", ""), data.get("latitude"),
+                               data.get("longitude"), data.get("radius_m") or 0)
+            if saved is None:
+                abort(400, "a name and coordinates are required")
+            return jsonify(saved)
+        return jsonify({"places": models.list_places(),
+                        "home_radius_m": [d.radius_m for d in config.GARAGE_DOORS]})
+
+    @app.route("/api/places/<int:place_id>", methods=["DELETE"])
+    @admin_required
+    def api_place_delete(place_id: int) -> Any:
+        models.delete_place(place_id)
+        return jsonify({"ok": True})
 
     @app.route("/api/alerts")
     @login_required

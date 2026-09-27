@@ -146,3 +146,6 @@ tr.charging-now { background: #f0fdf4; }
 .alert-list li { padding: .35rem 0; border-bottom: 1px solid #eceff2; font-size: .9rem; }
 .alert-list strong { display: block; }
 .alert-list .muted { font-size: .78rem; }
+
+td.nowrap { white-space: nowrap; }
+.btn.name-place { padding: .15rem .5rem; font-size: .8rem; }

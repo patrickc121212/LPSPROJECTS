@@ -155,13 +155,9 @@ def maybe_prune(now: float | None = None) -> int:
 
 
 def place_name(lat: float | None, lon: float | None) -> str | None:
-    """Label a point as a known garage, else None."""
-    if lat is None or lon is None:
-        return None
-    for door in config.GARAGE_DOORS:
-        if haversine_m(lat, lon, door.latitude, door.longitude) <= door.radius_m:
-            return "Home"
-    return None
+    """Label a point: a garage is Home, otherwise any place you have named."""
+    import places
+    return places.name_for(lat, lon)
 
 
 def summary(trips: list[dict]) -> dict:

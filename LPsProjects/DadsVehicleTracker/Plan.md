@@ -110,6 +110,17 @@ A power cut reboots the router, every DHCP lease changes, and three things broke
 - **Verified against the live Funnel**: external requests arrive with `X-Forwarded-For` set to the real public client IP (tested via `--resolve` to the IPv4 ingress 209.177.145.97), and tailnet requests additionally carry `Tailscale-User-Login`. So per-client limiting is meaningful rather than lumping the internet into one 127.0.0.1 bucket. `X-Forwarded-For` is still client-settable, which is what the global tier covers.
 - Not done: Cloudflare Access in front of the public URL, which would stop probes reaching the host at all. Recommended before any `vehicle_cmds` scope is ever granted.
 
+## Vehicle alerts and named places (added 2026-09-27)
+**Alerts** (`alerts.py`) — the cars were already publishing to `telemetry/<VIN>/alerts/<Name>/current` and we subscribed only to positions and connectivity, so these were arriving and being dropped. Fourteen were captured within seconds of switching it on. Most of the work is in *not* showing everything:
+- the "current" topic carries alerts that have already **ended**, so an alert counts as active only while `EndedAt` is empty — treating the topic as a list of live problems would surface every historical fault;
+- most carry a `Service` audience and engineering names, so only ones Tesla labels for the `Customer` are surfaced or pushed;
+- a republished alert notifies once; a recurrence with a new `StartedAt` is correctly a separate alert;
+- names are made readable in sentence case (`APP_w390_cabinCamVisDegraded` → "Cabin cam vis degraded"), leaving acronyms like HVP intact.
+
+Active ones appear in the map sidebar, all of them at `/api/alerts`, and new customer-facing ones push.
+
+**Places** (`places.py`) — trips now read "Home → Work". Home always comes from the garage locations and cannot be redefined, since a second definition would only disagree with them later. Other places are stored in the database (not config) because you name them while looking at a trip you just took: the Trips page shows a **Name** button on any trip whose destination is unknown. Matching is nearest-first so a school inside a town centre reads as the school, and radii are clamped to 20 m – 5 km. **Admin-only**, like the trip history they annotate — a named place says where someone routinely goes.
+
 ## Running costs (added 2026-09-27)
 `efficiency.py` joins the trip log (miles) to the charging log (kWh and money) — neither is interesting alone. Shown on `/charging`, with a per-trip estimate on `/trips`, and served by `/api/charging`.
 - **Attribution caveat, stated on the page**: energy is credited to the month it was *charged*, not *driven*. Over a month that averages out; a daily figure would be meaningless, so none is offered.
