@@ -47,6 +47,7 @@ import config
 import trips
 import door_control
 import geofence_worker
+import health
 import login_guard
 import models
 import sms
@@ -82,6 +83,7 @@ def create_app(start_workers: bool = True) -> Flask:
             tesla_poller.start_background()
         geofence_worker.start_background()
         sms.start_background()
+        health.start_background()
 
     @app.template_filter("localtime")
     def _localtime(ts: float | None) -> str:
@@ -118,6 +120,17 @@ def create_app(start_workers: bool = True) -> Flask:
     @app.context_processor
     def _inject_role():
         return {"is_admin": session.get("role") == config.ROLE_ADMIN}
+
+    @app.context_processor
+    def _inject_health():
+        """Surface problems on every page. The failures that hurt are the
+        ones that leave the site looking perfectly fine."""
+        if not session.get("user"):
+            return {"health_issues": []}
+        try:
+            return {"health_issues": [i.as_dict() for i in health.check()]}
+        except Exception:  # noqa: BLE001 — never break a page over this
+            return {"health_issues": []}
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
@@ -235,6 +248,11 @@ def create_app(start_workers: bool = True) -> Flask:
         )
 
     # --- JSON API ---------------------------------------------------------
+
+    @app.route("/api/health")
+    @login_required
+    def api_health() -> Any:
+        return jsonify(health.summary(health.check()))
 
     @app.route("/api/vehicles")
     @login_required

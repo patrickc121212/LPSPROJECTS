@@ -45,6 +45,22 @@ VIN_TO_KEY: dict[str, str] = {v.tesla_vin: v.key for v in config.VEHICLES if v.t
 _state: dict[str, dict[str, Any]] = {}
 _dirty = threading.Event()
 _lock = threading.Lock()
+# Whether the broker link is up. The health monitor reads this: the app can
+# serve pages perfectly while this has been down for hours.
+_mqtt_up = threading.Event()
+
+
+# Set once start_background() has run in THIS process. A console script or a
+# test never starts the worker, and must not be told it is "not subscribed".
+_started = threading.Event()
+
+
+def worker_running() -> bool:
+    return _started.is_set()
+
+
+def mqtt_connected() -> bool:
+    return _mqtt_up.is_set()
 
 
 def _num(v: Any) -> float | None:
@@ -242,6 +258,7 @@ def _run_mqtt() -> None:
     import paho.mqtt.client as mqtt
 
     def on_connect(client, userdata, flags, reason_code, properties=None):
+        _mqtt_up.set()
         log.info("MQTT connected to %s:%s (rc=%s); subscribing %s/+/#", MQTT_HOST, MQTT_PORT, reason_code, TOPIC_BASE)
         client.subscribe(f"{TOPIC_BASE}/+/v/#", qos=1)
         client.subscribe(f"{TOPIC_BASE}/+/connectivity", qos=1)
@@ -254,6 +271,7 @@ def _run_mqtt() -> None:
             log.warning("bad telemetry message on %s: %s", msg.topic, exc)
 
     def on_disconnect(client, userdata, flags, reason_code, properties=None):
+        _mqtt_up.clear()
         log.warning("MQTT disconnected (rc=%s); paho will reconnect", reason_code)
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="dads-tracker", clean_session=False)
@@ -266,6 +284,7 @@ def _run_mqtt() -> None:
             client.connect(MQTT_HOST, MQTT_PORT, keepalive=30)
             client.loop_forever(retry_first_connection=True)
         except Exception as exc:  # noqa: BLE001
+            _mqtt_up.clear()
             log.warning("MQTT connect failed (%s); retrying in 10s", exc)
             time.sleep(10)
 
@@ -275,5 +294,6 @@ def start_background() -> None:
         log.error("No TESLA_VIN_* set; telemetry worker has nothing to map. Idle.")
         return
     log.info("Telemetry worker: %d VINs mapped, broker %s:%s", len(VIN_TO_KEY), MQTT_HOST, MQTT_PORT)
+    _started.set()
     threading.Thread(target=_flusher, name="telemetry-flush", daemon=True).start()
     threading.Thread(target=_run_mqtt, name="telemetry-mqtt", daemon=True).start()

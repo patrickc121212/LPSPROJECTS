@@ -132,3 +132,11 @@ tr.charging-now { background: #f0fdf4; }
 .trip-map { height: 380px; border-radius: 8px; border: 1px solid #e3e6ea;
             margin: 1rem 0; padding: 0; }
 .btn.show-path { padding: .15rem .5rem; font-size: .8rem; }
+
+/* --- Health banner --- */
+.health { border-radius: 8px; padding: .6rem .9rem; margin: 0 0 .6rem;
+          font-size: .92rem; border: 1px solid; }
+.health strong { display: block; }
+.health span { opacity: .85; }
+.health.critical { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+.health.warning  { background: #fffbeb; border-color: #fde68a; color: #92400e; }

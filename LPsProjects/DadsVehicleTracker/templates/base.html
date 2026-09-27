@@ -24,6 +24,12 @@
 </header>
 
 <main>
+  {% for issue in health_issues %}
+    <div class="health {{ issue.severity }}">
+      <strong>{{ issue.message }}</strong>
+      {% if issue.detail %}<span>{{ issue.detail }}</span>{% endif %}
+    </div>
+  {% endfor %}
   {% with msgs = get_flashed_messages(with_categories=true) %}
     {% for cat, m in msgs %}
       <div class="flash {{ cat }}">{{ m }}</div>
