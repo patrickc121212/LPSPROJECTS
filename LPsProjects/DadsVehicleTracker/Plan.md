@@ -110,6 +110,13 @@ A power cut reboots the router, every DHCP lease changes, and three things broke
 - **Verified against the live Funnel**: external requests arrive with `X-Forwarded-For` set to the real public client IP (tested via `--resolve` to the IPv4 ingress 209.177.145.97), and tailnet requests additionally carry `Tailscale-User-Login`. So per-client limiting is meaningful rather than lumping the internet into one 127.0.0.1 bucket. `X-Forwarded-For` is still client-settable, which is what the global tier covers.
 - Not done: Cloudflare Access in front of the public URL, which would stop probes reaching the host at all. Recommended before any `vehicle_cmds` scope is ever granted.
 
+## Running costs (added 2026-09-27)
+`efficiency.py` joins the trip log (miles) to the charging log (kWh and money) — neither is interesting alone. Shown on `/charging`, with a per-trip estimate on `/trips`, and served by `/api/charging`.
+- **Attribution caveat, stated on the page**: energy is credited to the month it was *charged*, not *driven*. Over a month that averages out; a daily figure would be meaningless, so none is offered.
+- **A month with driving but no charging reports "unknown", never $0.00 per mile.** The first version divided cost by miles and produced zero, which reads as "free" when it actually means the energy came from an earlier month's charge. Both sides must be present for a rate.
+- Thin months are suppressed (`MIN_MILES` 5, `MIN_KWH` 1) rather than turned into absurd ratios.
+- **Charging efficiency**: `charge_session.kwh_dc` now records the battery-side energy next to the billed wall-side figure, so the gap is visible. Observed live at 1.4 kW: 8.70 kWh drawn for 7.16 delivered, about 82% — the sort of number that justifies a 240 V circuit. Only sessions recorded after this change have it.
+
 ## Charging log (added 2026-09-26)
 - `charging.py` runs a per-vehicle session state machine off the telemetry stream: a session opens on `DetailedChargeState` Charging/Starting and closes when it stops. Sessions live in SQLite (`charge_session`) from the moment they open, so a restart mid-charge loses nothing. `/charging` shows sessions, per-month totals and cost; `/api/charging` serves the same as JSON.
 - Rate: `ELECTRICITY_RATE_PER_KWH` (0.13) — flat. A time-of-use tariff would need the rate applied per interval rather than per session.

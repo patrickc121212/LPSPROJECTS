@@ -39,7 +39,7 @@
     <table class="grid">
       <thead>
         <tr><th>Started</th><th>Vehicle</th><th>From → To</th><th class="r">Miles</th>
-            <th class="r">Duration</th><th class="r">Top</th><th class="r">Battery</th><th></th></tr>
+            <th class="r">Duration</th><th class="r">Top</th><th class="r">Battery</th><th class="r">Est. cost</th><th></th></tr>
       </thead>
       <tbody>
         {% for t in trips %}
@@ -52,6 +52,7 @@
             <td class="r">{% if t.ended_at %}{{ ((t.ended_at - t.started_at) / 60)|round|int }} min{% else %}—{% endif %}</td>
             <td class="r">{{ (t.max_speed_mph or 0)|round|int }}</td>
             <td class="r">{% if t.start_pct is not none %}{{ t.start_pct }}%{% if t.end_pct is not none %} → {{ t.end_pct }}%{% endif %}{% else %}—{% endif %}</td>
+            <td class="r">{% if t.est_cost is not none %}{{ currency }}{{ '%.2f'|format(t.est_cost) }}{% else %}—{% endif %}</td>
             <td><button class="btn show-path" data-trip="{{ t.id }}">Map</button></td>
           </tr>
         {% endfor %}

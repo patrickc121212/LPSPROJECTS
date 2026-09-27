@@ -44,6 +44,7 @@ from flask import (
 
 import charging
 import config
+import efficiency
 import trips
 import door_control
 import geofence_worker
@@ -218,8 +219,12 @@ def create_app(start_workers: bool = True) -> Flask:
         who = request.args.get("as", "")
         who = who if who in config.VEHICLES_BY_KEY else ""
         sessions = models.list_charge_sessions(limit=200, vehicle_key=who or None)
+        months = efficiency.by_month()
         return render_template(
             "charging.html",
+            costs=months,
+            overall=efficiency.overall(months),
+            charge_eff=efficiency.charging_efficiency(),
             vehicles=config.VEHICLES,
             me=who,
             sessions=sessions,
@@ -235,9 +240,12 @@ def create_app(start_workers: bool = True) -> Flask:
         who = request.args.get("as", "")
         who = who if who in config.VEHICLES_BY_KEY else ""
         rows = models.list_trips(limit=200, vehicle_key=who or None)
+        months = efficiency.by_month()
+        rates = {v.key: efficiency.cost_per_mile(v.key, months) for v in config.VEHICLES}
         for t in rows:
             t["from_name"] = trips.place_name(t.get("start_lat"), t.get("start_lon"))
             t["to_name"] = trips.place_name(t.get("end_lat"), t.get("end_lon"))
+            t["est_cost"] = efficiency.estimate_trip_cost(t, rates)
         return render_template(
             "trips.html",
             vehicles=config.VEHICLES,
@@ -245,6 +253,7 @@ def create_app(start_workers: bool = True) -> Flask:
             trips=rows,
             summary=trips.summary(rows),
             months=models.trip_totals_by_month(),
+            currency=config.CURRENCY_SYMBOL,
         )
 
     # --- JSON API ---------------------------------------------------------
@@ -290,10 +299,14 @@ def create_app(start_workers: bool = True) -> Flask:
         who = request.args.get("as", "")
         who = who if who in config.VEHICLES_BY_KEY else None
         sessions = models.list_charge_sessions(limit=200, vehicle_key=who)
+        months = efficiency.by_month()
         return jsonify({
             "rate_per_kwh": config.ELECTRICITY_RATE_PER_KWH,
             "summary": charging.summary(sessions),
             "by_month": models.charge_totals_by_month(),
+            "costs_by_month": months,
+            "overall": efficiency.overall(months),
+            "charging_efficiency": efficiency.charging_efficiency(),
             "sessions": sessions,
         })
 

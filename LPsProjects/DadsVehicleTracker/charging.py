@@ -83,6 +83,9 @@ def observe(vehicle_key: str, snap: dict, now: float, at_home: bool | None = Non
         models.update_charge_session(
             open_session["id"],
             end_pct=snap.get("battery_pct"),
+            # Track the battery-side figure alongside the billed one; the
+            # difference is the onboard charger's losses.
+            kwh_dc=max(snap.get("dc_energy") or 0.0, open_session.get("kwh_dc") or 0.0) or None,
             lifetime_last=snap.get("lifetime_kwh"),
             # Keep the running maximum: the counter may reset at the start of
             # a session, and must never appear to go down mid-session.
@@ -98,6 +101,7 @@ def observe(vehicle_key: str, snap: dict, now: float, at_home: bool | None = Non
         models.update_charge_session(
             open_session["id"],
             end_pct=snap.get("battery_pct"),
+            kwh_dc=max(snap.get("dc_energy") or 0.0, open_session.get("kwh_dc") or 0.0) or None,
             lifetime_last=snap.get("lifetime_kwh"),
             counter_last=max(counter or 0.0, open_session.get("counter_last") or 0.0) or None,
         )

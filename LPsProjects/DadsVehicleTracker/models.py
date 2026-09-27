@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS charge_session (
     -- running values kept so a restart mid-session loses nothing
     lifetime_start REAL,
     lifetime_last  REAL,
-    counter_last   REAL
+    counter_last   REAL,
+    kwh_dc         REAL          -- energy that reached the battery, vs kwh from the wall
 );
 
 CREATE TABLE IF NOT EXISTS trip (
@@ -138,6 +139,7 @@ _MIGRATIONS = [
     ("inbox", "sms_sent_at", "ALTER TABLE inbox ADD COLUMN sms_sent_at REAL"),
     ("vehicle_state", "seatbelt", "ALTER TABLE vehicle_state ADD COLUMN seatbelt TEXT"),
     ("vehicle_state", "gear", "ALTER TABLE vehicle_state ADD COLUMN gear TEXT"),
+    ("charge_session", "kwh_dc", "ALTER TABLE charge_session ADD COLUMN kwh_dc REAL"),
 ]
 
 
@@ -437,7 +439,7 @@ def get_open_charge_session(vehicle_key: str) -> dict | None:
 def update_charge_session(session_id: int, **fields) -> None:
     """Update only the columns given; unknown keys are ignored deliberately
     so a caller can pass a partial snapshot."""
-    allowed = {"end_pct", "peak_kw", "lifetime_last", "counter_last"}
+    allowed = {"end_pct", "peak_kw", "lifetime_last", "counter_last", "kwh_dc"}
     sets = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if not sets:
         return
