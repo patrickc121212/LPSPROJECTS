@@ -53,6 +53,7 @@ for _n in ("1", "2", "3"):
     os.environ[f"GARAGE{_n}_CLOSE_RADIUS_M"] = ""
     os.environ[f"GARAGE{_n}_SHELLY_HOST"] = ""
     os.environ[f"GARAGE{_n}_SENSOR_INPUT"] = ""
+    os.environ[f"GARAGE{_n}_SHELLY_MAC"] = ""
 
 import config  # noqa: E402
 import models  # noqa: E402
@@ -81,6 +82,7 @@ def fresh_db(tmp_path, monkeypatch):
     _trips._last_prune = 0.0
     door_control._sensor_cache.clear()
     door_control._last_action.clear()
+    shelly._located.clear()
     yield db_file
 
 

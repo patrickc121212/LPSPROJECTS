@@ -90,6 +90,19 @@
 - Retention: `HISTORY_RETENTION_DAYS` (365) prunes breadcrumbs hourly. Trip summaries are kept regardless — they are tiny, and losing them loses more than losing the detail. Set 0 to keep everything.
 - **Privacy**: this records where every driver goes and how fast. Worth the family knowing it exists; retention is one env var and history can be pruned at any time.
 
+## Surviving a power cut (added 2026-09-27)
+A power cut reboots the router, every DHCP lease changes, and three things broke at once on 2026-09-27 with nothing looking wrong from outside: the Shelly moved (192.168.1.107 -> .17), this PC moved (.40 -> .48, breaking the router's 443 forward) and the ISP issued a new WAN address (the DNS record still named the old one, so the cars could not reach the receiver).
+
+**Self-healing, in the app:**
+- `shelly.locate()` treats the MAC as the identity and the address as a lease. It tries the configured address, then the device's own mDNS name (`shelly1g4-<mac>.local`, which survives a new lease), then sweeps the subnet — and only accepts a device whose MAC matches, so it can never pulse a stranger's switch. Verified live: a deliberately stale address recovered via mDNS in ~2 s and cached. Set `GARAGE{N}_SHELLY_MAC`.
+- `ddns.py` corrects the Cloudflare A record when the WAN address changes, reusing the zone-scoped token that already issues the TLS certificate. The health check still reports it as a warning afterwards, because a changed LAN address means the router's forward needs a person.
+- The health monitor (below) makes any remaining breakage visible instead of silent.
+
+**Still needs a person, and worth doing once:**
+- **DHCP reservations** in the router for this PC and for each Shelly (Shelly 1 Gen4 MAC `48F6EECFCBF0`). The app now copes without them, but a reservation stops the churn at source and keeps the router's 443 forward valid.
+- **The 443 port forward** must point at this PC's current LAN address.
+- **Docker Desktop only starts at sign-in**, so after an unattended reboot the telemetry receiver stays down until someone logs in. The real fix is decision 3 — move the stack to a Pi or mini-PC, where Docker runs as a system service and none of this applies.
+
 ## Login hardening (added 2026-09-26)
 - The public URL is swept constantly: **660 probe requests 2026-09-12 to 09-25** for `/.env` (and `/api/.env`, `/src/.env`, `/backend/.env`, `/app/.env`, `/.env.production`), `/.git/config`, `/.git/HEAD`, a dozen `phpinfo` variants and a WordPress `rest_route` exploit. All were refused — Flask serves only declared routes plus `/static/` — but they show the host is found and indexed within hours of going public.
 - Before this, `/login` had no rate limit, no lockout and **no logging of failures**: a brute-force attempt left no trace at all.

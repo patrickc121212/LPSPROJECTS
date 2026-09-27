@@ -103,7 +103,8 @@ def actuate(door: config.GarageDoor, action: str) -> dict:
     record_action(door.key)
 
     if door.shelly_host:
-        ok, detail = shelly.pulse(door.shelly_host, door.shelly_channel)
+        host = shelly.locate(door.shelly_host, door.shelly_mac)
+        ok, detail = shelly.pulse(host, door.shelly_channel)
         return {"ok": ok, "via": "shelly", "detail": detail}
 
     routine = door.routine_open if action == "open" else door.routine_close
@@ -145,7 +146,8 @@ def sensed_open(door: config.GarageDoor, now: float | None = None) -> bool | Non
     hit = _sensor_cache.get(door.key)
     if hit and now - hit[0] < SENSOR_CACHE_S:
         return hit[1]
-    raw = shelly.get_input_state(door.shelly_host, int(door.sensor_input))
+    raw = shelly.get_input_state(shelly.locate(door.shelly_host, door.shelly_mac),
+                                 int(door.sensor_input))
     if raw is None:
         result = None
     else:
@@ -203,7 +205,8 @@ def startup_check() -> None:
     pulse config could latch the opener button on."""
     for door in config.GARAGE_DOORS:
         if door.shelly_host:
-            ok, detail = shelly.check_pulse_config(door.shelly_host, door.shelly_channel)
+            ok, detail = shelly.check_pulse_config(
+                shelly.locate(door.shelly_host, door.shelly_mac), door.shelly_channel)
             level = log.info if ok else log.warning
             sensor = f"sensor input:{door.sensor_input}" if has_sensor(door) else "NO position sensor (state is inferred)"
             level("%s -> Shelly %s (%s, %s)", door.label, door.shelly_host, detail, sensor)

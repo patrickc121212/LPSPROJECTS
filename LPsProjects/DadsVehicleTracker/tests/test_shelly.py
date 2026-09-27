@@ -331,3 +331,76 @@ def test_radius_is_configurable_per_door(monkeypatch):
     finally:
         monkeypatch.delenv("GARAGE2_RADIUS_M", raising=False)
         importlib.reload(cfg)
+
+
+# --- finding the relay again after DHCP moves it ----------------------------
+
+def test_locate_passes_through_without_a_mac():
+    """Unchanged behaviour for anyone who has not set a MAC."""
+    assert shelly.locate("192.168.1.17", "") == "192.168.1.17"
+
+
+def test_locate_prefers_the_configured_address(monkeypatch):
+    seen = []
+    monkeypatch.setattr(shelly, "identify",
+                        lambda h, timeout=2.0: (seen.append(h), "AA")[1])
+    assert shelly.locate("192.168.1.17", "AA", now=1000.0) == "192.168.1.17"
+    assert seen == ["192.168.1.17"], "should not look further once it answers"
+
+
+def test_locate_falls_back_to_the_mdns_name(monkeypatch):
+    """The lease moved, but the name the device advertises did not."""
+    def fake(host, timeout=2.0):
+        return "AA" if host.endswith(".local") else None
+    monkeypatch.setattr(shelly, "identify", fake)
+    assert shelly.locate("192.168.1.107", "AA", now=1000.0) == "shelly1g4-aa.local"
+
+
+def test_locate_sweeps_when_neither_answers(monkeypatch):
+    monkeypatch.setattr(shelly, "identify", lambda h, timeout=2.0: None)
+    monkeypatch.setattr(shelly, "_sweep", lambda mac, workers=64: "192.168.1.55")
+    assert shelly.locate("192.168.1.107", "AA", now=1000.0) == "192.168.1.55"
+
+
+def test_locate_returns_the_configured_value_when_nothing_is_found(monkeypatch):
+    """Give the caller something usable rather than None, and let the pulse
+    fail loudly where it is already handled."""
+    monkeypatch.setattr(shelly, "identify", lambda h, timeout=2.0: None)
+    monkeypatch.setattr(shelly, "_sweep", lambda mac, workers=64: None)
+    assert shelly.locate("192.168.1.107", "AA", now=1000.0) == "192.168.1.107"
+
+
+def test_locate_result_is_cached(monkeypatch):
+    calls = {"n": 0}
+
+    def counting(host, timeout=2.0):
+        calls["n"] += 1
+        return "AA"
+
+    monkeypatch.setattr(shelly, "identify", counting)
+    shelly.locate("192.168.1.17", "AA", now=1000.0)
+    shelly.locate("192.168.1.17", "AA", now=1000.0 + 10)
+    assert calls["n"] == 1, "a door press must not re-probe the network"
+    shelly.locate("192.168.1.17", "AA", now=1000.0 + shelly.LOCATE_CACHE_S + 1)
+    assert calls["n"] == 2
+
+
+def test_locate_only_accepts_the_right_device(monkeypatch):
+    """Something else answering on that address must not be mistaken for
+    our relay — pulsing a stranger's switch would be worse than failing."""
+    monkeypatch.setattr(shelly, "identify",
+                        lambda h, timeout=2.0: "SOMEONE-ELSE")
+    monkeypatch.setattr(shelly, "_sweep", lambda mac, workers=64: None)
+    assert shelly.locate("192.168.1.17", "AA", now=1000.0) == "192.168.1.17"
+
+
+def test_mdns_name_is_derived_from_the_mac():
+    assert shelly.mdns_name("48F6EECFCBF0") == "shelly1g4-48f6eecfcbf0.local"
+
+
+def test_identify_returns_the_mac(monkeypatch):
+    monkeypatch.setattr(shelly, "_rpc",
+                        lambda *a, **k: (True, {"mac": "48f6eecfcbf0"}))
+    assert shelly.identify("1.2.3.4") == "48F6EECFCBF0"
+    monkeypatch.setattr(shelly, "_rpc", lambda *a, **k: (False, "timeout"))
+    assert shelly.identify("1.2.3.4") is None

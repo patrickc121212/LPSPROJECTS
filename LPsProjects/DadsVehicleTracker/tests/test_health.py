@@ -336,3 +336,72 @@ def test_push_failure_is_swallowed(monkeypatch):
     monkeypatch.setattr(notify.urllib.request, "urlopen",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("down")))
     assert notify.send("t", "m") is False  # reported, not raised
+
+
+# --- self-healing: surviving a power cut and router reboot ------------------
+
+def test_wan_change_is_corrected_not_merely_reported(monkeypatch):
+    """A new WAN address used to break the cars silently. We hold a
+    zone-scoped token, so fix the record instead of just complaining."""
+    import ddns
+    calls = []
+    monkeypatch.setattr(health, "wan_matches_dns",
+                        lambda now, force=False: ("5.6.7.8", "1.2.3.4"))
+    monkeypatch.setattr(ddns, "reconcile",
+                        lambda host, pub, dns: (calls.append((host, pub, dns)), "updated")[1])
+    monkeypatch.setenv("TELEMETRY_HOST", "telemetry.example.com")
+    issue = health.check_wan(1000.0)
+    assert calls == [("telemetry.example.com", "5.6.7.8", "1.2.3.4")]
+    # Still surfaced, because the router's forward may also need attention.
+    assert issue.severity == health.SEV_WARNING
+    assert "corrected automatically" in issue.message
+
+
+def test_wan_change_that_cannot_be_fixed_stays_critical(monkeypatch):
+    import ddns
+    monkeypatch.setattr(health, "wan_matches_dns",
+                        lambda now, force=False: ("5.6.7.8", "1.2.3.4"))
+    monkeypatch.setattr(ddns, "reconcile", lambda host, pub, dns: "failed")
+    assert health.check_wan(1000.0).severity == health.SEV_CRITICAL
+
+
+def test_ddns_is_a_no_op_when_already_correct():
+    import ddns
+    assert ddns.reconcile("h", "1.2.3.4", "1.2.3.4") == "ok"
+
+
+def test_ddns_respects_the_disable_switch(monkeypatch):
+    import ddns
+    monkeypatch.setattr(ddns, "ENABLED", False)
+    assert ddns.reconcile("h", "5.6.7.8", "1.2.3.4") == "disabled"
+
+
+def test_ddns_reports_failure_without_a_token(monkeypatch):
+    import ddns
+    monkeypatch.setattr(ddns, "ENABLED", True)
+    monkeypatch.setattr(ddns, "token", lambda: "")
+    assert ddns.reconcile("h", "5.6.7.8", "1.2.3.4") == "failed"
+
+
+def test_ddns_reads_the_certbot_credentials_file(tmp_path, monkeypatch):
+    """Reuse the credential that already issues the TLS certificate rather
+    than asking for it twice."""
+    import ddns
+    ini = tmp_path / "cloudflare.ini"
+    ini.write_text("# comment\ndns_cloudflare_api_token = abc123\n")
+    monkeypatch.setattr(ddns, "CREDENTIALS", ini)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    assert ddns.token() == "abc123"
+
+
+def test_ddns_prefers_the_environment_token(tmp_path, monkeypatch):
+    import ddns
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "from-env")
+    assert ddns.token() == "from-env"
+
+
+def test_ddns_missing_credentials_is_survivable(tmp_path, monkeypatch):
+    import ddns
+    monkeypatch.setattr(ddns, "CREDENTIALS", tmp_path / "nope.ini")
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    assert ddns.token() == ""

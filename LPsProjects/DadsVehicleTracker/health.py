@@ -123,7 +123,8 @@ def check_doors() -> list[Issue]:
     for door in config.GARAGE_DOORS:
         if not door.shelly_host:
             continue
-        ok, detail = shelly.check_pulse_config(door.shelly_host, door.shelly_channel)
+        host = shelly.locate(door.shelly_host, door.shelly_mac)
+        ok, detail = shelly.check_pulse_config(host, door.shelly_channel)
         if not ok and "unreachable" in detail:
             out.append(Issue(
                 f"door:{door.key}", SEV_CRITICAL,
@@ -181,17 +182,35 @@ def wan_matches_dns(now: float, force: bool = False) -> tuple[str, str] | None:
 
 def check_wan(now: float) -> Issue | None:
     """Our WAN address changing silently stops the cars reaching the
-    telemetry receiver — exactly what happened on 2026-09-27."""
+    telemetry receiver — exactly what happened on 2026-09-27.
+
+    We hold a zone-scoped Cloudflare token already, so rather than only
+    complaining, put the record right and say what was done. The router's
+    port forward still needs a person if the LAN address moved too, which is
+    why this stays a visible warning even after a successful fix.
+    """
+    import ddns
     pair = wan_matches_dns(now)
     if not pair:
         return None
     public, dns = pair
     if public == dns:
         return None
+    host = os.getenv("TELEMETRY_HOST", "")
+    outcome = ddns.reconcile(host, public, dns)
+    if outcome == "updated":
+        # Force the next check to look again rather than trust the cache.
+        with _wan.lock:
+            _wan.at = 0.0
+        return Issue("wan", SEV_WARNING,
+                     "WAN address changed — DNS corrected automatically",
+                     f"{host} now points at {public} (was {dns}). If this "
+                     "machine's LAN address also changed, the router's 443 "
+                     "forward needs updating by hand.")
     return Issue("wan", SEV_CRITICAL,
                  "Cars cannot reach the telemetry receiver",
-                 f"This network's address is {public} but "
-                 f"{os.getenv('TELEMETRY_HOST', '')} still points at {dns}. "
+                 f"This network's address is {public} but {host} still points "
+                 f"at {dns}, and it could not be corrected ({outcome}). "
                  "Update the DNS record, and check the router's 443 forward.")
 
 

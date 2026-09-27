@@ -17,6 +17,9 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,6 +30,96 @@ log = logging.getLogger("shelly")
 DEFAULT_TIMEOUT_S = 4.0
 # How long the relay stays closed = how long the opener's button is "pressed".
 DEFAULT_PULSE_S = 0.5
+
+
+# --- Finding the device again after it moves ---------------------------------
+# A DHCP lease is not an identity. A power cut reboots the router, every
+# device gets a new address, and door control breaks with nothing else
+# looking wrong. The MAC is the identity, so we keep one and use it to find
+# the relay again: try the configured address, then the mDNS name the device
+# advertises, then sweep the subnet. Whatever answers with the right MAC is
+# remembered for next time.
+
+_located: dict[str, tuple[str, float]] = {}   # mac -> (host, found_at)
+_locate_lock = threading.Lock()
+LOCATE_CACHE_S = 300.0
+
+
+def identify(host: str, timeout: float = 2.0) -> str | None:
+    """The MAC of whatever answers at `host`, or None."""
+    ok, payload = _rpc(host, "Shelly.GetDeviceInfo", None, timeout)
+    if ok and isinstance(payload, dict):
+        return str(payload.get("mac") or "").upper() or None
+    return None
+
+
+def mdns_name(mac: str, model_prefix: str = "shelly1g4") -> str:
+    """The name the device advertises, which survives a new lease."""
+    return f"{model_prefix}-{mac.lower()}.local"
+
+
+def _subnet_hosts() -> list[str]:
+    """Addresses on this machine's own /24, for a last-resort sweep."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            mine = sock.getsockname()[0]
+    except OSError:
+        return []
+    base = mine.rsplit(".", 1)[0]
+    return [f"{base}.{i}" for i in range(1, 255) if f"{base}.{i}" != mine]
+
+
+def _sweep(mac: str, workers: int = 64) -> str | None:
+    from concurrent.futures import ThreadPoolExecutor
+    hosts = _subnet_hosts()
+    if not hosts:
+        return None
+    log.warning("Sweeping the subnet for Shelly %s — this takes a few seconds", mac)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for host, found in zip(hosts, pool.map(lambda h: identify(h, 1.5), hosts)):
+            if found == mac:
+                return host
+    return None
+
+
+def locate(configured_host: str, mac: str = "", now: float | None = None) -> str:
+    """Where the relay actually is.
+
+    Falls back to `configured_host` when there is no MAC to search by, so
+    behaviour is unchanged for anyone who has not set one.
+    """
+    if not mac:
+        return configured_host
+    now = time.time() if now is None else now
+    with _locate_lock:
+        hit = _located.get(mac)
+    if hit and now - hit[1] < LOCATE_CACHE_S:
+        return hit[0]
+
+    for candidate, how in ((configured_host, "configured address"),
+                           (mdns_name(mac), "mDNS name")):
+        if not candidate:
+            continue
+        if identify(candidate) == mac:
+            if candidate != configured_host:
+                log.warning("Shelly %s answered on its %s (%s), not %s",
+                            mac, how, candidate, configured_host)
+            with _locate_lock:
+                _located[mac] = (candidate, now)
+            return candidate
+
+    found = _sweep(mac)
+    if found:
+        log.warning("Shelly %s has moved to %s (was %s) — update "
+                    "GARAGE*_SHELLY_HOST, or give it a DHCP reservation",
+                    mac, found, configured_host)
+        with _locate_lock:
+            _located[mac] = (found, now)
+        return found
+
+    log.error("Shelly %s not found anywhere on this network", mac)
+    return configured_host
 
 
 def _rpc(host: str, method: str, params: dict[str, Any] | None = None,

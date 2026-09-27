@@ -66,6 +66,9 @@ class GarageDoor:
     # Routine names above. Empty = fall back to the routine webhook.
     shelly_host: str = ""
     shelly_channel: int = 0
+    # The relay's MAC. An address is a lease and moves when the router
+    # reboots; the MAC does not, so it is what lets us find the device again.
+    shelly_mac: str = ""
     # Door-position sensor on the Shelly (reed switch). Empty = no sensor,
     # in which case door state is only ever our memory of the last pulse.
     # Holds the input id as a string, e.g. "0" for the built-in SW terminal
@@ -89,6 +92,7 @@ GARAGE_DOORS: list[GarageDoor] = [
         radius_m=float(os.getenv("GARAGE1_RADIUS_M", "75")),
         close_radius_m=float(os.getenv("GARAGE1_CLOSE_RADIUS_M") or 0),
         shelly_host=os.getenv("GARAGE1_SHELLY_HOST", ""),
+        shelly_mac=os.getenv("GARAGE1_SHELLY_MAC", "").replace(":", "").upper(),
         sensor_input=os.getenv("GARAGE1_SENSOR_INPUT", ""),
         sensor_invert=os.getenv("GARAGE1_SENSOR_INVERT", "0") == "1",
         shelly_channel=int(os.getenv("GARAGE1_SHELLY_CHANNEL", "0")),
@@ -103,6 +107,7 @@ GARAGE_DOORS: list[GarageDoor] = [
         radius_m=float(os.getenv("GARAGE2_RADIUS_M", "75")),
         close_radius_m=float(os.getenv("GARAGE2_CLOSE_RADIUS_M") or 0),
         shelly_host=os.getenv("GARAGE2_SHELLY_HOST", ""),
+        shelly_mac=os.getenv("GARAGE2_SHELLY_MAC", "").replace(":", "").upper(),
         sensor_input=os.getenv("GARAGE2_SENSOR_INPUT", ""),
         sensor_invert=os.getenv("GARAGE2_SENSOR_INVERT", "0") == "1",
         shelly_channel=int(os.getenv("GARAGE2_SHELLY_CHANNEL", "0")),
@@ -117,6 +122,7 @@ GARAGE_DOORS: list[GarageDoor] = [
         radius_m=float(os.getenv("GARAGE3_RADIUS_M", "75")),
         close_radius_m=float(os.getenv("GARAGE3_CLOSE_RADIUS_M") or 0),
         shelly_host=os.getenv("GARAGE3_SHELLY_HOST", ""),
+        shelly_mac=os.getenv("GARAGE3_SHELLY_MAC", "").replace(":", "").upper(),
         sensor_input=os.getenv("GARAGE3_SENSOR_INPUT", ""),
         sensor_invert=os.getenv("GARAGE3_SENSOR_INVERT", "0") == "1",
         shelly_channel=int(os.getenv("GARAGE3_SHELLY_CHANNEL", "0")),
