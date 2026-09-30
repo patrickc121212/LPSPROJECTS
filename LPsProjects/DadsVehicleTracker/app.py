@@ -388,9 +388,11 @@ def create_app(start_workers: bool = True) -> Flask:
         door = config.GARAGE_DOORS_BY_KEY.get(door_key)
         if door is None or action not in ("open", "close"):
             abort(400)
+        door_states = {d["door_key"]: d for d in models.all_door_states()}
+        new_state = door_control.state_after_pulse(door, action, door_states, time.time())
         result = door_control.actuate(door, action)
         if result["ok"]:
-            models.upsert_door_state(door_key, action == "open")
+            models.upsert_door_state(door_key, new_state)
             bus.publish("doors", models.all_door_states())
         return jsonify({
             "ok": result["ok"],
@@ -398,6 +400,7 @@ def create_app(start_workers: bool = True) -> Flask:
             "routine": door.routine_open if action == "open" else door.routine_close,
             "detail": result["detail"],
             "toggle": door_control.is_toggle(door),
+            "is_open": new_state if result["ok"] else None,
         })
 
     @app.route("/api/allowlist", methods=["POST"])

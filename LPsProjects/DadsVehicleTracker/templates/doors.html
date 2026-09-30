@@ -21,8 +21,14 @@
           <p class="muted">Shelly {{ d.shelly_host }} — one pulse <em>toggles</em> the door. No sensor fitted, so the state above is what we last commanded, not what the door is really doing.</p>
         {% endif %}
         <div class="actions">
-          <button class="btn open"  data-action="open"  data-door="{{ d.key }}">Open</button>
-          <button class="btn close" data-action="close" data-door="{{ d.key }}">Close</button>
+          {% if d.key in toggle_doors %}
+            {# One button, because the relay only has one action. Two labelled
+               Open and Close would imply a choice the hardware cannot offer. #}
+            <button class="btn open" data-action="toggle" data-door="{{ d.key }}">Press opener</button>
+          {% else %}
+            <button class="btn open"  data-action="open"  data-door="{{ d.key }}">Open</button>
+            <button class="btn close" data-action="close" data-door="{{ d.key }}">Close</button>
+          {% endif %}
         </div>
         <fieldset>
           <legend>Allowlist (other vehicles)</legend>

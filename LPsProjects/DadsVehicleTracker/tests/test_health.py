@@ -22,9 +22,11 @@ import shelly
 @pytest.fixture(autouse=True)
 def _reset():
     health._previous = set()
+    health._recovery_owed = False
     health._wan.at, health._wan.value = 0.0, None
     yield
     health._previous = set()
+    health._recovery_owed = False
 
 
 @pytest.fixture
@@ -405,3 +407,58 @@ def test_ddns_missing_credentials_is_survivable(tmp_path, monkeypatch):
     monkeypatch.setattr(ddns, "CREDENTIALS", tmp_path / "nope.ini")
     monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
     assert ddns.token() == ""
+
+
+# --- an alert that cannot be delivered must not be forgotten ----------------
+
+def test_a_failed_push_is_retried_next_sweep(monkeypatch):
+    """During the 2026-09-29 internet outage every push failed and was still
+    marked as reported, so neither the fault nor its recovery ever reached
+    anyone."""
+    attempts = []
+    monkeypatch.setattr(notify, "send",
+                        lambda **kw: (attempts.append(kw["title"]), False)[1])
+    issue = health.Issue("mqtt", health.SEV_CRITICAL, "Telemetry down", "d")
+    assert health.notify_changes([issue]) == []
+    assert health.notify_changes([issue]) == []
+    assert len(attempts) == 2, "should keep trying while the fault stands"
+
+
+def test_a_retried_alert_reports_once_it_gets_through(monkeypatch):
+    outcome = {"ok": False}
+    sent = []
+    monkeypatch.setattr(notify, "send",
+                        lambda **kw: (sent.append(kw["title"]), outcome["ok"])[1])
+    issue = health.Issue("mqtt", health.SEV_CRITICAL, "Telemetry down", "d")
+    health.notify_changes([issue])
+    outcome["ok"] = True
+    assert health.notify_changes([issue]) == ["mqtt"]
+    # Delivered: stop repeating it. Two attempts in total — one that failed,
+    # one that landed — and nothing after.
+    assert health.notify_changes([issue]) == []
+    assert len(sent) == 2
+
+
+def test_recovery_is_retried_until_it_lands(monkeypatch):
+    """The all-clear matters as much as the alarm."""
+    outcome = {"ok": True}
+    titles = []
+    monkeypatch.setattr(notify, "send",
+                        lambda **kw: (titles.append(kw["title"]), outcome["ok"])[1])
+    issue = health.Issue("mqtt", health.SEV_CRITICAL, "Telemetry down", "d")
+    health.notify_changes([issue])          # delivered
+    outcome["ok"] = False
+    health.notify_changes([])               # recovery push fails
+    assert sum("healthy again" in t.lower() for t in titles) == 1, "tried once"
+    outcome["ok"] = True
+    assert "recovered" in health.notify_changes([])
+    assert sum("healthy again" in t.lower() for t in titles) == 2
+
+
+def test_no_recovery_message_if_nothing_was_ever_reported(monkeypatch):
+    titles = []
+    monkeypatch.setattr(notify, "send",
+                        lambda **kw: (titles.append(kw["title"]), True)[1])
+    health.notify_changes([])
+    health.notify_changes([])
+    assert titles == []

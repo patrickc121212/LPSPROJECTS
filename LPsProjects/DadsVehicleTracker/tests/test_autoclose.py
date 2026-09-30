@@ -671,3 +671,107 @@ def test_gear_is_not_wiped_by_a_source_that_omits_it():
     models.upsert_vehicle_state("dad", 1.0, 2.0, 0, 80, True)
     row = {r["vehicle_key"]: r for r in models.all_vehicle_states()}["dad"]
     assert row["gear"] == "P"
+
+
+# --- a pulse toggles, so record the inverse, not the button pressed ---------
+
+def _toggle_door():
+    return replace(owned_by("dad"), shelly_host="10.0.0.9")
+
+
+def test_pressing_close_on_a_shut_door_records_it_as_open():
+    """The 2026-09-28 fault: a relay across the opener's button toggles, so
+    "Close" on an already-shut door OPENS it. Recording the request instead
+    of the inverse left the app insisting a door was closed for two days."""
+    d = _toggle_door()
+    now = 1_000_000.0
+    shut = {d.key: {"door_key": d.key, "is_open": 0, "updated_at": now}}
+    assert door_control.state_after_pulse(d, "close", shut, now) is True
+
+
+def test_pressing_open_on_an_open_door_records_it_as_shut():
+    d = _toggle_door()
+    now = 1_000_000.0
+    open_now = _open_state(d, now)
+    assert door_control.state_after_pulse(d, "open", open_now, now) is False
+
+
+def test_a_routine_door_is_not_a_toggle():
+    """A Google Routine named "Open Garage 1" really does open it."""
+    d = replace(owned_by("dad"), shelly_host="")
+    now = 1_000_000.0
+    open_now = _open_state(d, now)
+    assert door_control.state_after_pulse(d, "open", open_now, now) is True
+    assert door_control.state_after_pulse(d, "close", open_now, now) is False
+
+
+def test_manual_press_records_the_inverse_through_the_api(auth, monkeypatch, pulses):
+    d = _toggle_door()
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    monkeypatch.setattr(config, "GARAGE_DOORS_BY_KEY", {d.key: d})
+    models.upsert_door_state(d.key, False)          # believed shut
+    body = auth.post("/api/door", json={"door_key": d.key, "action": "close"}).get_json()
+    assert body["ok"] and body["is_open"] is True
+    assert {x["door_key"]: x["is_open"] for x in models.all_door_states()}[d.key] == 1
+
+
+def test_a_failed_pulse_records_nothing(auth, monkeypatch):
+    d = _toggle_door()
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    monkeypatch.setattr(config, "GARAGE_DOORS_BY_KEY", {d.key: d})
+    monkeypatch.setattr(shelly, "pulse", lambda *a, **k: (False, "timed out"))
+    models.upsert_door_state(d.key, False)
+    body = auth.post("/api/door", json={"door_key": d.key, "action": "open"}).get_json()
+    assert body["ok"] is False and body["is_open"] is None
+    assert {x["door_key"]: x["is_open"] for x in models.all_door_states()}[d.key] == 0
+
+
+# --- a departure must not be cut short by the parked rule -------------------
+
+def test_parked_rule_is_held_off_after_a_departure_open(depart_open, parked_close):
+    """The 2026-09-28 fault: buckled at 04:37 so the door opened, and the
+    parked rule shut it at 04:39 while the driver was still on the drive."""
+    d = owned_by("dad")
+    now = 1_000_000.0
+    gw.doors_to_open_for_departure(_parked_at(d, belt="Latched"), _shut(d, now), now)
+    open_now = _open_state(d, now)
+    unbuckled = _parked_at(d, belt="Unlatched")
+    for t in (30, 60, 120, 200, 400):
+        assert gw.doors_to_close_after_parking(unbuckled, open_now, now + t) == [], \
+            f"closed {t}s into a departure"
+
+
+def test_the_grace_ends_once_they_actually_drive_away(depart_open, parked_close):
+    d = owned_by("dad")
+    now = 1_000_000.0
+    gw.doors_to_open_for_departure(_parked_at(d, belt="Latched"), _shut(d, now), now)
+    assert d.key in gw._departing
+    # Crossing the close fence means they have gone.
+    gw._owner_away_seconds(d, {"dad": at(d, 500)}, now + 120)
+    assert d.key not in gw._departing
+
+
+def test_grace_expires_so_a_stalled_departure_still_closes(depart_open, parked_close,
+                                                           monkeypatch):
+    """If they buckle up and then change their mind entirely, the door
+    should not stay open for ever."""
+    monkeypatch.setattr(config, "DEPART_GRACE_S", 300)
+    d = owned_by("dad")
+    now = 1_000_000.0
+    gw.doors_to_open_for_departure(_parked_at(d, belt="Latched"), _shut(d, now), now)
+    open_now = _open_state(d, now)
+    unbuckled = _parked_at(d, belt="Unlatched")
+    assert gw.doors_to_close_after_parking(unbuckled, open_now, now + 100) == []
+    gw.doors_to_close_after_parking(unbuckled, open_now, now + 301)
+    assert gw.doors_to_close_after_parking(unbuckled, open_now, now + 400) == [d.key]
+
+
+def test_arriving_home_is_unaffected_by_the_grace(depart_open, parked_close):
+    """The grace is only for a departure we caused; a normal arrival still
+    closes after the dwell."""
+    d = owned_by("dad")
+    now = 1_000_000.0
+    open_now = _open_state(d, now)
+    parked = _parked_at(d)
+    gw.doors_to_close_after_parking(parked, open_now, now)
+    assert gw.doors_to_close_after_parking(parked, open_now, now + 31) == [d.key]

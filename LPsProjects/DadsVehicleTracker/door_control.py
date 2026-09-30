@@ -42,6 +42,28 @@ def is_toggle(door: config.GarageDoor) -> bool:
     return bool(door.shelly_host)
 
 
+def state_after_pulse(door: config.GarageDoor, requested: str,
+                      door_states: dict[str, dict], now: float) -> bool:
+    """What the door's state becomes once we have actuated it.
+
+    A relay wired across the opener's button TOGGLES: the door ends up in
+    the opposite state to whatever it was in, regardless of which button was
+    pressed. Recording the *requested* action instead is wrong exactly when
+    it matters — press "Close" on an already-closed door and it opens, while
+    the app cheerfully notes it as closed and every later rule works from
+    that lie.
+
+    Doors driven by a Google Routine are not toggles: "open" means open.
+
+    This is still only an approximation: a pulse at a door that is mid-travel
+    stops it rather than completing the cycle, so the true state machine has
+    more positions than we can see. Only a position sensor settles it.
+    """
+    if not is_toggle(door):
+        return requested == "open"
+    return not is_open(door, door_states, now)
+
+
 def _fire_routine(routine_name: str) -> tuple[bool, str]:
     """POST to the Google Home webhook. No-op in dev unless the URL is set."""
     try:

@@ -56,6 +56,12 @@ _parked_closed: set[str] = set()
 # Doors opened because the owner buckled up; cleared when they unbuckle or
 # drive away, so one buckle produces one open.
 _depart_opened: set[str] = set()
+# Doors opened because their owner buckled up, until that owner actually
+# leaves. The parked rule must not shut a door we opened seconds ago
+# *because* someone was departing: on 2026-09-28 the driver buckled at
+# 04:37, the door opened, and the parked rule closed it at 04:39 while they
+# were still on the driveway.
+_departing: dict[str, float] = {}
 
 # (vehicle_key, door_key) -> last fire timestamp
 _last_fire: dict[tuple[str, str], float] = {}
@@ -142,6 +148,8 @@ def _owner_away_seconds(door: config.GarageDoor, states: dict[str, dict[str, Any
         _away_since.pop(door.key, None)
         _auto_closed.discard(door.key)
         return None
+    # Outside: they have actually gone, so the departure is over.
+    _departing.pop(door.key, None)
     since = _away_since.setdefault(door.key, now)
     return max(0.0, now - since)
 
@@ -188,6 +196,7 @@ def doors_to_open_for_departure(
         if door_control.is_open(door, door_states, now):
             continue
         _depart_opened.add(door.key)
+        _departing[door.key] = now
         # Restart the dwell clock. Otherwise the parked-close rule, whose
         # timer has been running since the car arrived, fires the instant
         # anything lifts its seatbelt suppression — which is exactly how a
@@ -233,6 +242,12 @@ def doors_to_close_after_parking(
             # Belted in and sitting still: they are about to drive off, not
             # done for the day. Closing here would fight the departure-open
             # rule and shut the door on them.
+            continue
+        started = _departing.get(door.key)
+        if started is not None and (now - started) < config.DEPART_GRACE_S:
+            # We opened this door because they buckled up. Unbuckling for a
+            # moment - to fetch something, or a flicker in the signal - must
+            # not be read as "finished for the day".
             continue
         if not _parked(s):
             # Still in D or R, or the gear is unknown: the driver is not
@@ -320,9 +335,10 @@ def _tick() -> None:
         how = "sensor" if door_control.has_sensor(door) else "inferred state"
         why = "owner parked at the garage" if door_key in _parked_closed else "owner away"
         log.info("Auto-closing %s: %s and door open per %s", door.label, why, how)
+        new_state = door_control.state_after_pulse(door, "close", door_states, now)
         result = door_control.actuate(door, "close")
         if result["ok"]:
-            models.upsert_door_state(door_key, False)
+            models.upsert_door_state(door_key, new_state)
             changed = True
         else:
             log.warning("Auto-close of %s FAILED (%s): %s",
@@ -341,9 +357,10 @@ def _tick() -> None:
         for door_key in doors_to_open_for_departure(states, door_states, now):
             door = config.GARAGE_DOORS_BY_KEY[door_key]
             log.info("Opening %s: %s buckled up at the garage", door.label, door.owner_key)
+            new_state = door_control.state_after_pulse(door, "open", door_states, now)
             result = door_control.actuate(door, "open")
             if result["ok"]:
-                models.upsert_door_state(door_key, True)
+                models.upsert_door_state(door_key, new_state)
                 changed = True
             else:
                 log.warning("Departure-open of %s FAILED (%s): %s",
@@ -354,9 +371,10 @@ def _tick() -> None:
     for vehicle_key, door_key in evaluate(states, allowlists, now, door_states):
         door = config.GARAGE_DOORS_BY_KEY[door_key]
         log.info("Geofence enter: %s -> %s", vehicle_key, door.label)
+        new_state = door_control.state_after_pulse(door, "open", door_states, now)
         result = door_control.actuate(door, "open")
         if result["ok"]:
-            models.upsert_door_state(door.key, True)
+            models.upsert_door_state(door.key, new_state)
             changed = True
         else:
             log.warning("Auto-open of %s FAILED (%s): %s",

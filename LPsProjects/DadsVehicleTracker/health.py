@@ -60,6 +60,8 @@ class _WanCache:
 
 _wan = _WanCache()
 _previous: set[str] = set()
+# True when a recovery message is owed but could not be delivered.
+_recovery_owed = False
 
 
 # --- individual checks -------------------------------------------------------
@@ -269,33 +271,44 @@ def notify_changes(issues: list[Issue]) -> list[str]:
     Repeating an alert every five minutes trains people to ignore it, which
     is the same failure as having no alert at all.
     """
-    global _previous
+    global _previous, _recovery_owed
     current = {i.key for i in issues}
     by_key = {i.key: i for i in issues}
     new = current - _previous
     gone = _previous - current
     sent: list[str] = []
+    undelivered: set[str] = set()
 
     for key in sorted(new):
         issue = by_key[key]
-        notify.send(
+        log.warning("HEALTH %s: %s — %s", issue.severity.upper(),
+                    issue.message, issue.detail)
+        if notify.send(
             title=issue.message,
             message=issue.detail or issue.message,
             priority="high" if issue.severity == SEV_CRITICAL else "default",
             tags="rotating_light" if issue.severity == SEV_CRITICAL else "warning",
-        )
-        log.warning("HEALTH %s: %s — %s", issue.severity.upper(),
-                    issue.message, issue.detail)
-        sent.append(key)
+        ):
+            sent.append(key)
+        else:
+            # The push did not get through — during the 2026-09-29 internet
+            # outage every one of these failed and was still marked as
+            # reported, so the fault, and its recovery, were never told to
+            # anyone. Leave it unreported so the next sweep tries again.
+            undelivered.add(key)
 
-    if gone and not current:
-        notify.send(title="Tracker is healthy again",
-                    message="All checks passing.", tags="white_check_mark")
-        sent.append("recovered")
     for key in sorted(gone):
         log.info("HEALTH cleared: %s", key)
+    if gone and not current:
+        _recovery_owed = True
+    if _recovery_owed and not current:
+        if notify.send(title="Tracker is healthy again",
+                       message="All checks passing.", tags="white_check_mark"):
+            sent.append("recovered")
+            _recovery_owed = False
 
-    _previous = current
+    # Anything we could not deliver stays "new" for next time.
+    _previous = current - undelivered
     return sent
 
 

@@ -187,6 +187,9 @@ PARKED_RADIUS_M = float(os.getenv("PARKED_RADIUS_M", "25"))
 # Location after moving 10 m (telemetry minimum_delta), so anything reported
 # already exceeds this.
 PARKED_JITTER_M = float(os.getenv("PARKED_JITTER_M", "8"))
+# After opening a door because its owner buckled up, ignore the parked rule
+# for this long or until they actually drive away, whichever comes first.
+DEPART_GRACE_S = int(os.getenv("DEPART_GRACE_S", "600"))
 
 # Open the door when the owner buckles up at the garage — the earliest
 # unambiguous "about to drive off" signal the cars report. A spurious open

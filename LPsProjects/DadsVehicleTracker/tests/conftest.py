@@ -36,6 +36,7 @@ for _k, _v in {
     "PARKED_JITTER_M": "8",
     "DEPART_OPEN_ENABLED": "0",
     "DEPART_OPEN_RADIUS_M": "25",
+    "DEPART_GRACE_S": "600",
     "DOOR_ACTION_COOLDOWN_S": "60",
     "TRIP_IDLE_END_S": "180",
     "TRIP_MIN_DISTANCE_MI": "0.2",
@@ -77,6 +78,7 @@ def fresh_db(tmp_path, monkeypatch):
     geofence_worker._still_ref.clear()
     geofence_worker._parked_closed.clear()
     geofence_worker._depart_opened.clear()
+    geofence_worker._departing.clear()
     import trips as _trips
     _trips._last_point.clear()
     _trips._last_prune = 0.0
