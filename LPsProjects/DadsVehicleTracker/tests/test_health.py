@@ -462,3 +462,43 @@ def test_no_recovery_message_if_nothing_was_ever_reported(monkeypatch):
     health.notify_changes([])
     health.notify_changes([])
     assert titles == []
+
+
+# --- Tesla API credentials --------------------------------------------------
+
+def test_a_rejected_refresh_is_surfaced(monkeypatch, tmp_path):
+    """Telemetry keeps working without this token, so a dead one is
+    invisible until someone tries to change the cars' settings."""
+    import json
+    tokens = tmp_path / "t.json"
+    tokens.write_text(json.dumps({"refresh_token": "x"}))
+    monkeypatch.setenv("TESLA_TOKENS_PATH", str(tokens))
+    health.note_tesla_refresh_failure(True)
+    try:
+        issue = health.check_tesla_credentials(1000.0)
+        assert issue is not None and issue.severity == health.SEV_WARNING
+        assert "tesla_setup.py login" in issue.detail
+    finally:
+        health.note_tesla_refresh_failure(False)
+
+
+def test_a_working_refresh_is_silent(monkeypatch, tmp_path):
+    import json
+    tokens = tmp_path / "t.json"
+    tokens.write_text(json.dumps({"refresh_token": "x"}))
+    monkeypatch.setenv("TESLA_TOKENS_PATH", str(tokens))
+    health.note_tesla_refresh_failure(False)
+    assert health.check_tesla_credentials(1000.0) is None
+
+
+def test_no_token_file_is_not_this_checks_business(monkeypatch, tmp_path):
+    monkeypatch.setenv("TESLA_TOKENS_PATH", str(tmp_path / "absent.json"))
+    assert health.check_tesla_credentials(1000.0) is None
+
+
+def test_a_token_file_without_a_refresh_token_is_flagged(monkeypatch, tmp_path):
+    import json
+    tokens = tmp_path / "t.json"
+    tokens.write_text(json.dumps({"access_token": "x"}))
+    monkeypatch.setenv("TESLA_TOKENS_PATH", str(tokens))
+    assert health.check_tesla_credentials(1000.0).severity == health.SEV_WARNING

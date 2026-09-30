@@ -62,6 +62,8 @@ _wan = _WanCache()
 _previous: set[str] = set()
 # True when a recovery message is owed but could not be delivered.
 _recovery_owed = False
+# Set when a Fleet API refresh is rejected; cleared by a successful one.
+_tesla_refresh_failed = False
 
 
 # --- individual checks -------------------------------------------------------
@@ -216,6 +218,41 @@ def check_wan(now: float) -> Issue | None:
                  "Update the DNS record, and check the router's 443 forward.")
 
 
+def check_tesla_credentials(now: float) -> Issue | None:
+    """Can we still talk to Tesla's API?
+
+    Telemetry does not need this — the cars push to us — so a dead token is
+    invisible until someone tries to change what the cars report. Refresh
+    tokens are single use and rotate, so two processes refreshing at once
+    (as the duplicate instances on 2026-09-27 did) can leave the stored one
+    stale.
+    """
+    import json
+    path = os.getenv("TESLA_TOKENS_PATH", "data/tesla_tokens.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            tokens = json.load(fh)
+    except (OSError, ValueError):
+        return None   # not set up at all; not this check's business
+    if not tokens.get("refresh_token"):
+        return Issue("tesla_auth", SEV_WARNING, "No Tesla refresh token stored",
+                     "Run: python tesla_setup.py login")
+    if _tesla_refresh_failed:
+        return Issue("tesla_auth", SEV_WARNING,
+                     "Tesla API sign-in has expired",
+                     "Live telemetry still works, but the cars' settings "
+                     "cannot be changed until you run "
+                     "`python tesla_setup.py login` again.")
+    return None
+
+
+def note_tesla_refresh_failure(failed: bool = True) -> None:
+    """Called by whatever tries to use the API, so the check reports fact
+    rather than re-testing the credential on every sweep."""
+    global _tesla_refresh_failed
+    _tesla_refresh_failed = failed
+
+
 def check_certificate(now: float) -> Issue | None:
     path = os.path.join("telemetry", "certs", "archive",
                         os.getenv("TELEMETRY_HOST", ""))
@@ -247,7 +284,8 @@ def check(now: float | None = None) -> list[Issue]:
     issues: list[Issue] = []
     for fn in (lambda: [check_mqtt()], check_doors,
                lambda: [check_vehicle_data(now)], lambda: [check_wan(now)],
-               lambda: [check_certificate(now)]):
+               lambda: [check_certificate(now)],
+               lambda: [check_tesla_credentials(now)]):
         try:
             issues.extend(i for i in fn() if i)
         except Exception as exc:  # noqa: BLE001

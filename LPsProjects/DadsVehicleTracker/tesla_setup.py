@@ -232,10 +232,24 @@ async def _user_api(session: aiohttp.ClientSession):
         sys.exit("No tokens. Run: python tesla_setup.py login")
     oauth = _oauth(session, toks)
     if oauth.expires < time.time() + 60:
-        await oauth.refresh_access_token()
+        try:
+            await oauth.refresh_access_token()
+        except Exception:
+            _note_refresh(failed=True)
+            raise
         toks.update(access_token=oauth._access_token, refresh_token=oauth.refresh_token, expires=oauth.expires)
         save_tokens(toks)
+        _note_refresh(failed=False)
     return oauth
+
+
+def _note_refresh(failed: bool) -> None:
+    """Tell the health monitor, if it is running in this process."""
+    try:
+        import health
+        health.note_tesla_refresh_failure(failed)
+    except Exception:  # noqa: BLE001 — the CLI runs without the monitor
+        pass
 
 
 async def cmd_vehicles() -> None:
@@ -301,7 +315,11 @@ def telemetry_fields() -> dict:
     three cars driving ~2 h/day at these rates is well under $2/month."""
     loc_s = int(os.getenv("TELEMETRY_LOCATION_S", "5"))
     return {
-        "Location":            {"interval_seconds": loc_s, "minimum_delta": 10, "delivery_policy": "latest"},
+        # minimum_delta is the reporting step: the cars stay silent until they
+        # have moved this far, so it is the finest a geofence can resolve. At
+        # 10 m a 10 m fence was unusable. 4 m only adds traffic while
+        # manoeuvring, since interval_seconds still caps the rate at speed.
+        "Location":            {"interval_seconds": loc_s, "minimum_delta": 4, "delivery_policy": "latest"},
         "VehicleSpeed":        {"interval_seconds": 10},
         "Gear":                {"interval_seconds": 10},
         "BatteryLevel":        {"interval_seconds": 60},

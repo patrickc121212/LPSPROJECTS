@@ -111,7 +111,9 @@ def test_telemetry_config_builder(tmp_path, monkeypatch):
     assert cfg["hostname"] == "telemetry.example.com" and cfg["port"] == 443
     assert cfg["ca"].startswith("-----BEGIN CERTIFICATE-----")
     assert {"Location", "VehicleSpeed", "BatteryLevel", "Gear"} <= set(cfg["fields"])
-    assert cfg["fields"]["Location"]["minimum_delta"] == 10
+    # The reporting step is the finest a geofence can resolve, so it has to
+    # be smaller than the tightest fence (10 m).
+    assert cfg["fields"]["Location"]["minimum_delta"] == 4
     assert cfg["alert_types"] == ["service"]
 
 

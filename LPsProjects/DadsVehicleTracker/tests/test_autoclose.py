@@ -281,7 +281,7 @@ def test_departure_uses_the_close_fence_not_the_open_fence(auto_close, monkeypat
     monkeypatch.setattr(config, "AUTO_CLOSE_DELAY_S", 5)
     now = 1_000_000.0
     st = _open_state(d, now)
-    at_60m = at(d, 60)          # outside close fence, inside open fence
+    at_60m = {**at(d, 60), "gear": "D"}   # outside close fence, under way
     gw.departure_actions({"dad": at_60m}, st, now)
     assert gw.departure_actions({"dad": at_60m}, st, now + 6)[0] == [d.key]
 
@@ -293,7 +293,7 @@ def test_still_in_the_driveway_does_not_arm_the_close(auto_close, monkeypatch):
     monkeypatch.setattr(config, "AUTO_CLOSE_DELAY_S", 5)
     now = 1_000_000.0
     st = _open_state(d, now)
-    at_20m = at(d, 20)          # still inside the close fence
+    at_20m = {**at(d, 20), "gear": "D"}   # still inside the close fence
     gw.departure_actions({"dad": at_20m}, st, now)
     assert gw.departure_actions({"dad": at_20m}, st, now + 600)[0] == []
 
@@ -400,7 +400,7 @@ def test_zero_delay_closes_on_the_first_reading_outside(auto_close, monkeypatch)
     monkeypatch.setattr(config, "AUTO_CLOSE_DELAY_S", 0)
     now = 1_000_000.0
     st = _open_state(d, now)
-    assert gw.departure_actions({"dad": at(d, 25)}, st, now)[0] == [d.key]
+    assert gw.departure_actions({"dad": {**at(d, 25), "gear": "D"}}, st, now)[0] == [d.key]
 
 
 def test_zero_delay_still_requires_leaving_the_close_fence(auto_close, monkeypatch):
@@ -410,7 +410,7 @@ def test_zero_delay_still_requires_leaving_the_close_fence(auto_close, monkeypat
     monkeypatch.setattr(config, "AUTO_CLOSE_DELAY_S", 0)
     now = 1_000_000.0
     st = _open_state(d, now)
-    assert gw.departure_actions({"dad": at(d, 15)}, st, now)[0] == []
+    assert gw.departure_actions({"dad": {**at(d, 15), "gear": "D"}}, st, now)[0] == []
 
 
 def test_warns_when_the_parked_zone_overlaps_the_close_fence(monkeypatch):
@@ -775,3 +775,60 @@ def test_arriving_home_is_unaffected_by_the_grace(depart_open, parked_close):
     parked = _parked_at(d)
     gw.doors_to_close_after_parking(parked, open_now, now)
     assert gw.doors_to_close_after_parking(parked, open_now, now + 31) == [d.key]
+
+
+# --- a tight fence needs more than position ---------------------------------
+
+def test_parked_gps_drift_past_the_fence_is_not_a_departure(auto_close, monkeypatch):
+    """Measured scatter on a stationary car reaches 9 m, and a false
+    departure fires a close — which on an already-shut door OPENS it at an
+    empty house. Position alone must not be enough near the fence."""
+    d = replace(owned_by("dad"), close_radius_m=10.0)
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    monkeypatch.setattr(config, "GARAGE_DOORS_BY_KEY", {d.key: d})
+    monkeypatch.setattr(config, "AUTO_CLOSE_DELAY_S", 0)
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    drifted = {"dad": {**at(d, 14), "gear": "P", "speed_mph": 0}}
+    gw.departure_actions(drifted, st, now)
+    assert gw.departure_actions(drifted, st, now + 600)[0] == []
+
+
+def test_driving_out_past_a_ten_metre_fence_does_close(auto_close, monkeypatch):
+    d = replace(owned_by("dad"), close_radius_m=10.0)
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    monkeypatch.setattr(config, "GARAGE_DOORS_BY_KEY", {d.key: d})
+    monkeypatch.setattr(config, "AUTO_CLOSE_DELAY_S", 0)
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    leaving = {"dad": {**at(d, 14), "gear": "D", "speed_mph": 6}}
+    assert gw.departure_actions(leaving, st, now)[0] == [d.key]
+
+
+def test_reported_speed_alone_is_enough(auto_close, monkeypatch):
+    d = replace(owned_by("dad"), close_radius_m=10.0)
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    monkeypatch.setattr(config, "GARAGE_DOORS_BY_KEY", {d.key: d})
+    monkeypatch.setattr(config, "AUTO_CLOSE_DELAY_S", 0)
+    now = 1_000_000.0
+    leaving = {"dad": {**at(d, 14), "gear": None, "speed_mph": 11}}
+    assert gw.departure_actions(leaving, _open_state(d, now), now)[0] == [d.key]
+
+
+def test_far_enough_away_position_alone_settles_it(auto_close, monkeypatch):
+    """Covers a stale or missing gear reading: nobody parks 500 m away and
+    calls it home."""
+    d = replace(owned_by("dad"), close_radius_m=10.0)
+    monkeypatch.setattr(config, "GARAGE_DOORS", [d])
+    monkeypatch.setattr(config, "GARAGE_DOORS_BY_KEY", {d.key: d})
+    monkeypatch.setattr(config, "AUTO_CLOSE_DELAY_S", 0)
+    now = 1_000_000.0
+    gone = {"dad": {**at(d, 500), "gear": "P", "speed_mph": 0}}
+    assert gw.departure_actions(gone, _open_state(d, now), now)[0] == [d.key]
+
+
+def test_the_confirmation_threshold_is_configurable(monkeypatch):
+    monkeypatch.setattr(config, "DEPART_CONFIRM_M", 30.0)
+    parked = {"gear": "P", "speed_mph": 0}
+    assert gw._has_driven_off(parked, 25.0) is False
+    assert gw._has_driven_off(parked, 35.0) is True

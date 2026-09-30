@@ -37,6 +37,10 @@ log = logging.getLogger("geofence_worker")
 
 # Set by request_tick() when a fresh position lands, so the worker reacts to
 # a car arriving instead of waiting out its next scheduled sweep.
+# Gears that mean the car is under way. Defined here rather than imported
+# from trips, which imports this module for haversine_m.
+MOVING_GEARS = {"D", "R"}
+
 _wake = threading.Event()
 # Set to ask the loop to exit; lets tests run the real loop without leaving
 # a daemon thread ticking against a torn-down database.
@@ -132,6 +136,26 @@ def evaluate(
     return fire
 
 
+def _has_driven_off(state: dict[str, Any], distance_m: float) -> bool:
+    """Is this really a departure, or just a parked car's GPS wandering?
+
+    Measured scatter on a stationary car reaches 9 m, and positions only
+    arrive every 10 m, so a tight fence cannot tell the two apart on
+    position alone — and a false departure fires a close, which on an
+    already-shut door OPENS it at an empty house.
+
+    So near the fence we want corroboration that the car is actually under
+    way: out of Park, or reporting speed. Far enough out, position alone
+    settles it, which also covers a stale or missing gear reading.
+    """
+    if distance_m > config.DEPART_CONFIRM_M:
+        return True
+    if (state.get("speed_mph") or 0) > 0:
+        return True
+    gear = str(state.get("gear") or "")
+    return gear in MOVING_GEARS
+
+
 def _owner_away_seconds(door: config.GarageDoor, states: dict[str, dict[str, Any]],
                         now: float) -> float | None:
     """How long the owner has been outside the door's CLOSE fence
@@ -142,8 +166,8 @@ def _owner_away_seconds(door: config.GarageDoor, states: dict[str, dict[str, Any
         return None  # no fix: don't start or advance the timer
     # Departure uses its own, usually tighter, fence: crossing it should be
     # visible in the mirror rather than happening a street away.
-    inside = haversine_m(s["latitude"], s["longitude"],
-                         door.latitude, door.longitude) <= config.close_radius(door)
+    distance = haversine_m(s["latitude"], s["longitude"], door.latitude, door.longitude)
+    inside = distance <= config.close_radius(door) or not _has_driven_off(s, distance)
     if inside:
         _away_since.pop(door.key, None)
         _auto_closed.discard(door.key)

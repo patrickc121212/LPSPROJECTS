@@ -190,6 +190,12 @@ PARKED_JITTER_M = float(os.getenv("PARKED_JITTER_M", "8"))
 # After opening a door because its owner buckled up, ignore the parked rule
 # for this long or until they actually drive away, whichever comes first.
 DEPART_GRACE_S = int(os.getenv("DEPART_GRACE_S", "600"))
+# Beyond this distance, position alone proves they have gone, whatever the
+# gear says. Inside it, we additionally want evidence the car is moving,
+# because GPS noise on a parked car is the same size as a tight fence:
+# measured scatter while parked reaches 9 m, so a 10 m fence has no margin
+# on position alone.
+DEPART_CONFIRM_M = float(os.getenv("DEPART_CONFIRM_M", "60"))
 
 # Open the door when the owner buckles up at the garage — the earliest
 # unambiguous "about to drive off" signal the cars report. A spurious open
