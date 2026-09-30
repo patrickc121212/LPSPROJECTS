@@ -108,16 +108,23 @@ def _location(v: Any) -> tuple[float | None, float | None]:
     return None, None
 
 
-def apply_signal(vehicle_key: str, field: str, value: Any) -> dict[str, Any]:
+def apply_signal(vehicle_key: str, field: str, value: Any,
+                 retained: bool = False) -> dict[str, Any]:
     """Fold one telemetry field into the in-memory state for a vehicle and
     return the updated row. Unknown fields are ignored (we only subscribe
     to what we configured, but a firmware may add extras)."""
     with _lock:
         row = _state.setdefault(vehicle_key, {"vehicle_key": vehicle_key, "online": True})
+        # Once anything live arrives, the row is live; a replay alone leaves
+        # it marked as such so the flush knows not to act on it.
+        row["replayed"] = bool(retained) and row.get("replayed", True)
         if field == "Location":
             lat, lon = _location(value)
             if lat is not None and lon is not None:
+                moved = (row.get("latitude"), row.get("longitude")) != (lat, lon)
                 row["latitude"], row["longitude"] = lat, lon
+                if moved and not retained:
+                    row["position_at"] = time.time()
         elif field == "VehicleSpeed":
             mph = _num(value)
             row["speed_mph"] = None if mph is None else max(0.0, mph)
@@ -166,8 +173,17 @@ def apply_connectivity(vehicle_key: str, payload: dict[str, Any]) -> None:
         row["updated_at"] = time.time()
 
 
-def handle_message(topic: str, payload: bytes) -> bool:
-    """Route one MQTT message. Returns True if it changed vehicle state."""
+def handle_message(topic: str, payload: bytes, retained: bool = False) -> bool:
+    """Route one MQTT message. Returns True if it changed vehicle state.
+
+    `retained` marks a value the broker replayed on connect rather than one
+    the car has just sent. It is the car's last known reading and may be
+    hours old — on 2026-09-30 a restart re-ingested a 13-hour-old position
+    and recorded it as current, inventing a history point and making a
+    sleeping car look freshly seen. We keep such values, because a last
+    known position is better than a blank map, but nothing may treat them
+    as something that just happened.
+    """
     parts = topic.split("/")
     # telemetry/<VIN>/v/<Field>   or   telemetry/<VIN>/connectivity
     if len(parts) < 3 or parts[0] != TOPIC_BASE:
@@ -181,7 +197,7 @@ def handle_message(topic: str, payload: bytes) -> bool:
     except (UnicodeDecodeError, json.JSONDecodeError):
         value = payload.decode("utf-8", "replace")
     if parts[2] == "v" and len(parts) >= 4:
-        apply_signal(key, parts[3], value)
+        apply_signal(key, parts[3], value, retained=retained)
         return True
     if parts[2] == "connectivity" and isinstance(value, dict):
         apply_connectivity(key, value)
@@ -223,6 +239,7 @@ def flush() -> None:
             bool(r.get("online", False)),
             seatbelt=r.get("seatbelt"),
             gear=r.get("gear"),
+            position_at=r.get("position_at"),
         )
     _update_trips(rows)
     _update_charging(rows)
@@ -243,6 +260,8 @@ def _update_trips(rows: list[dict]) -> None:
     import trips
     now = time.time()
     for r in rows:
+        if r.get("replayed"):
+            continue   # a replayed position never happened just now
         try:
             trips.observe(r["vehicle_key"], r, now)
         except Exception as exc:  # noqa: BLE001 — never let this break the map
@@ -256,6 +275,8 @@ def _update_trips(rows: list[dict]) -> None:
 def _update_charging(rows: list[dict]) -> None:
     now = time.time()
     for r in rows:
+        if r.get("replayed"):
+            continue
         try:
             charging.observe(r["vehicle_key"], r, now, _at_home(r))
         except Exception as exc:  # noqa: BLE001 — never let this break the map
@@ -288,7 +309,7 @@ def _run_mqtt() -> None:
 
     def on_message(client, userdata, msg):
         try:
-            if handle_message(msg.topic, msg.payload):
+            if handle_message(msg.topic, msg.payload, retained=bool(msg.retain)):
                 _dirty.set()
         except Exception as exc:  # noqa: BLE001
             log.warning("bad telemetry message on %s: %s", msg.topic, exc)

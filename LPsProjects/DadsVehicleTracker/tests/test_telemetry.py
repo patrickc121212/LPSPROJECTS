@@ -183,3 +183,86 @@ def test_seatbelt_is_not_wiped_by_a_source_that_omits_it():
     models.upsert_vehicle_state("dad", 1.0, 2.0, 0, 80, True)   # no seatbelt kwarg
     row = {r["vehicle_key"]: r for r in models.all_vehicle_states()}["dad"]
     assert row["seatbelt"] == "Latched"
+
+
+# --- a replayed value is not an event ---------------------------------------
+
+def test_a_replayed_position_is_kept_but_not_treated_as_news():
+    """Mosquitto replays the last retained value on connect. On 2026-09-30 a
+    restart re-ingested a 13-hour-old position and recorded it as current,
+    inventing a history point and making a sleeping car look freshly seen."""
+    tw.handle_message("telemetry/VIN_DAD/v/Location",
+                      json.dumps({"latitude": 37.0, "longitude": -122.0}).encode(),
+                      retained=True)
+    row = tw._state["dad"]
+    assert row["latitude"] == 37.0, "still worth showing as the last known spot"
+    assert row["replayed"] is True
+    assert row.get("position_at") is None, "we cannot know when it was true"
+
+
+def test_a_live_message_clears_the_replayed_mark():
+    tw.handle_message("telemetry/VIN_DAD/v/Location",
+                      json.dumps({"latitude": 37.0, "longitude": -122.0}).encode(),
+                      retained=True)
+    tw.handle_message("telemetry/VIN_DAD/v/VehicleSpeed", b"12", retained=False)
+    assert tw._state["dad"]["replayed"] is False
+
+
+def test_replayed_data_creates_no_trip_or_history(monkeypatch):
+    import trips
+    seen = []
+    monkeypatch.setattr(trips, "observe", lambda *a, **k: seen.append(a))
+    tw.handle_message("telemetry/VIN_DAD/v/Location",
+                      json.dumps({"latitude": 37.0, "longitude": -122.0}).encode(),
+                      retained=True)
+    tw.flush()
+    assert seen == [], "a replay must not start a trip or store a breadcrumb"
+
+
+def test_replayed_data_does_not_drive_the_charging_machine(monkeypatch):
+    import charging
+    seen = []
+    monkeypatch.setattr(charging, "observe", lambda *a, **k: seen.append(a))
+    tw.handle_message("telemetry/VIN_DAD/v/DetailedChargeState",
+                      json.dumps("DetailedChargeStateCharging").encode(), retained=True)
+    tw.flush()
+    assert seen == []
+
+
+def test_live_data_still_drives_everything(monkeypatch):
+    import trips
+    seen = []
+    monkeypatch.setattr(trips, "observe", lambda *a, **k: seen.append(a))
+    tw.handle_message("telemetry/VIN_DAD/v/Location",
+                      json.dumps({"latitude": 37.0, "longitude": -122.0}).encode(),
+                      retained=False)
+    tw.flush()
+    assert len(seen) == 1
+
+
+def test_position_age_is_tracked_separately_from_last_contact(monkeypatch):
+    """A sleeping car still sends battery and charge state, which refreshes
+    "last heard"; only a genuine move refreshes the position time."""
+    # A fixed, advancing clock: two real calls can land in the same tick.
+    ticks = iter([1000.0, 1001.0, 1002.0, 1003.0, 1004.0, 1005.0])
+    monkeypatch.setattr(tw.time, "time", lambda: next(ticks))
+    tw.handle_message("telemetry/VIN_DAD/v/Location",
+                      json.dumps({"latitude": 37.0, "longitude": -122.0}).encode())
+    first = tw._state["dad"]["position_at"]
+    assert first is not None
+    tw.handle_message("telemetry/VIN_DAD/v/BatteryLevel", b"77")
+    assert tw._state["dad"]["position_at"] == first, "battery is not movement"
+    tw.handle_message("telemetry/VIN_DAD/v/Location",
+                      json.dumps({"latitude": 37.0, "longitude": -122.0}).encode())
+    assert tw._state["dad"]["position_at"] == first, "same spot is not movement"
+    tw.handle_message("telemetry/VIN_DAD/v/Location",
+                      json.dumps({"latitude": 37.5, "longitude": -122.0}).encode())
+    assert tw._state["dad"]["position_at"] > first
+
+
+def test_position_age_reaches_the_database():
+    tw.handle_message("telemetry/VIN_DAD/v/Location",
+                      json.dumps({"latitude": 37.0, "longitude": -122.0}).encode())
+    tw.flush()
+    row = {r["vehicle_key"]: r for r in models.all_vehicle_states()}["dad"]
+    assert row["position_at"] is not None
