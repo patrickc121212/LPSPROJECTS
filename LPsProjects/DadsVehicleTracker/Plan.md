@@ -105,6 +105,27 @@ A power cut reboots the router, every DHCP lease changes, and three things broke
 - **The 443 port forward** must point at this PC's current LAN address.
 - **Docker Desktop only starts at sign-in**, so after an unattended reboot the telemetry receiver stays down until someone logs in. The real fix is decision 3 — move the stack to a Pi or mini-PC, where Docker runs as a system service and none of this applies.
 
+## Nothing watched the watcher (added 2026-10-19)
+**The tracker was dead for five days and nobody knew.** It stopped on 2026-10-14 at 10:48 and was found only because Patrick noticed the site was down on 10-19.
+
+What happened, in order: the PC rebooted at 01:48 on 10-14 and the S4U at-startup trigger worked exactly as designed — `supervisor: starting app.py` at 01:49:46. But **Docker Desktop only starts at sign-in**, so MQTT failed every 12 s for nine hours. At 10:48:05 the log reads `supervisor: app.py exited (1); restarting in 10s` and then stops. The app and the supervisor died together, leaving **no traceback at all**, because `pythonw.exe` has no stderr to write one to. Uptime was 124 h at diagnosis, so there was no later reboot to re-fire the trigger.
+
+Recovery was manual: start Docker Desktop (engine up in ~15 s, both containers returned), `Start-ScheduledTask`. One instance, local 200, public 200, MQTT connected, health all clear, all three cars contacted within the hour.
+
+**The actual defect was not the crash — it was the silence.** `health.py` runs *inside* `app.py`. It can report a broken relay, a dead broker, an expiring certificate or a stale fix, but it can never report the app being down, because it is not running either. Every alerting path in the system ran inside the process that died.
+
+**`watchdog.py`, its own scheduled task, every five minutes:**
+- Asks for `/login` rather than checking the port. A wedged process can hold a socket without serving, and a plain port check would have called that healthy.
+- Restarts the task if there is no answer, waits up to 45 s (counted as nine checks, not a clock deadline), and pushes either way — recovered at normal priority, still-down at high.
+- Notification is wrapped in `try/except` and the restart is attempted first. Restarting is the job; telling you is the report, and a failed push must not cost the restart. There is a test that asserts this ordering.
+- Install with `install_watchdog_task.ps1` (non-admin, no UAC, no stored password).
+
+**`supervisor.pyw` now writes its own crash to `data/app.log`** — type, message and traceback. One line in that file would have turned five days of silence into an explanation.
+
+**Known gap, deliberately accepted:** the watchdog runs as the logged-on user, so it does not cover the window between a reboot and the next sign-in. The app's own S4U task does start in that window, but Docker does not, so telemetry stays down until someone signs in — the same gap as the power-cut section, and the same real fix: decision 3, move the stack to a Pi or mini-PC.
+
+**Also fixed:** `pytest.ini` pins collection to `tests/`. Collecting from the repo root walked into `telemetry/certs/live/`, where certbot's symlinks are unreadable by Windows Python (WinError 1920), and aborted the entire run before the first test — the same unreadable symlinks that nearly hid certificate renewal from the health check.
+
 ## Login hardening (added 2026-09-26)
 - The public URL is swept constantly: **660 probe requests 2026-09-12 to 09-25** for `/.env` (and `/api/.env`, `/src/.env`, `/backend/.env`, `/app/.env`, `/.env.production`), `/.git/config`, `/.git/HEAD`, a dozen `phpinfo` variants and a WordPress `rest_route` exploit. All were refused — Flask serves only declared routes plus `/static/` — but they show the host is found and indexed within hours of going public.
 - Before this, `/login` had no rate limit, no lockout and **no logging of failures**: a brute-force attempt left no trace at all.
