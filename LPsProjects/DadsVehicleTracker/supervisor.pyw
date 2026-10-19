@@ -142,5 +142,31 @@ def main() -> None:
         time.sleep(RESTART_DELAY_S)
 
 
+def _log_crash(exc: BaseException) -> None:
+    """Record why the supervisor itself died.
+
+    pythonw.exe has no stderr, so when this process crashed on 2026-10-14 it
+    took the app with it and left not one line behind — five days of silence
+    with nothing to read afterwards. Whatever kills us now gets written down.
+    """
+    import traceback
+    try:
+        LOG.parent.mkdir(exist_ok=True)
+        with open(LOG, "a", encoding="utf-8", errors="replace") as log:
+            log.write(f"[{_stamp()}] supervisor: CRASHED -- "
+                      f"{type(exc).__name__}: {exc}
+")
+            log.write(traceback.format_exc())
+            log.write(f"[{_stamp()}] supervisor: exiting; the watchdog task "
+                      "should restart us
+")
+    except Exception:  # noqa: BLE001 — nothing left to do if even this fails
+        pass
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BaseException as exc:  # noqa: BLE001 — including KeyboardInterrupt
+        _log_crash(exc)
+        raise
