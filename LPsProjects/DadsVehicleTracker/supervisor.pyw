@@ -154,12 +154,10 @@ def _log_crash(exc: BaseException) -> None:
         LOG.parent.mkdir(exist_ok=True)
         with open(LOG, "a", encoding="utf-8", errors="replace") as log:
             log.write(f"[{_stamp()}] supervisor: CRASHED -- "
-                      f"{type(exc).__name__}: {exc}
-")
+                      f"{type(exc).__name__}: {exc}\n")
             log.write(traceback.format_exc())
             log.write(f"[{_stamp()}] supervisor: exiting; the watchdog task "
-                      "should restart us
-")
+                      "should restart us\n")
     except Exception:  # noqa: BLE001 — nothing left to do if even this fails
         pass
 
