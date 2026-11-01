@@ -31,6 +31,7 @@ from typing import Any
 import config
 import door_control
 import models
+import notify
 from eventbus import bus
 
 log = logging.getLogger("geofence_worker")
@@ -57,6 +58,10 @@ _auto_closed: set[str] = set()
 _still_ref: dict[str, tuple[float, float, float]] = {}
 # Doors closed because the owner parked; cleared when the car moves again.
 _parked_closed: set[str] = set()
+# door_key -> when it first sat parked-but-unplugged, for the reminder push.
+_awaiting_plug: dict[str, float] = {}
+# door_keys we have already nagged about, so the reminder fires once.
+_plug_alerted: set[str] = set()
 # Doors opened because the owner buckled up; cleared when they unbuckle or
 # drive away, so one buckle produces one open.
 _depart_opened: set[str] = set()
@@ -192,6 +197,18 @@ def _buckled(state: dict[str, Any] | None) -> bool:
     return bool(state) and str(state.get("seatbelt") or "") == "Latched"
 
 
+def _plugged_in(state: dict[str, Any] | None) -> bool:
+    """Is the charge cable connected, per the car?
+
+    Deliberately an allowlist of known-plugged states. A missing or
+    unrecognised DetailedChargeState means we do not know, and not knowing
+    must never be the thing that moves a door.
+    """
+    if not state:
+        return False
+    return str(state.get("charge_state") or "") in config.PLUGGED_IN_STATES
+
+
 def doors_to_open_for_departure(
     states: dict[str, dict[str, Any]],
     door_states: dict[str, dict],
@@ -228,6 +245,22 @@ def doors_to_open_for_departure(
         _still_ref.pop(door.owner_key, None)
         _parked_closed.discard(door.key)
         out.append(door.key)
+    return out
+
+
+def doors_waiting_for_plug(now: float) -> list[str]:
+    """Doors held open only because the car is not plugged in yet, and which
+    have been waiting long enough to be worth mentioning. Returns each door
+    once; call it from the tick, which owns the notification."""
+    if not config.PLUGGED_IN_ALERT_S:
+        return []
+    out = []
+    for door_key, since in _awaiting_plug.items():
+        if door_key in _plug_alerted:
+            continue
+        if (now - since) >= config.PLUGGED_IN_ALERT_S:
+            _plug_alerted.add(door_key)
+            out.append(door_key)
     return out
 
 
@@ -279,16 +312,29 @@ def doors_to_close_after_parking(
             # the car is genuinely parked.
             _still_ref.pop(door.owner_key, None)
             _parked_closed.discard(door.key)
+            _awaiting_plug.pop(door.key, None)
+            _plug_alerted.discard(door.key)
             continue
         still_s = stationary_seconds(door.owner_key, s["latitude"], s["longitude"], now)
         at_garage = haversine_m(s["latitude"], s["longitude"],
                                 door.latitude, door.longitude) <= config.PARKED_RADIUS_M
         if not at_garage:
             _parked_closed.discard(door.key)
+            _awaiting_plug.pop(door.key, None)
+            _plug_alerted.discard(door.key)
             continue
         if still_s < config.PARKED_DWELL_S:
             _parked_closed.discard(door.key)
+            _awaiting_plug.pop(door.key, None)
             continue
+        if config.REQUIRE_PLUGGED_IN_TO_CLOSE and not _plugged_in(s):
+            # Parked, still, done driving — but the cable is not in yet, so
+            # someone is probably still walking round the car. Hold the door
+            # and remember since when, so the tick can say so out loud.
+            _awaiting_plug.setdefault(door.key, now)
+            _parked_closed.discard(door.key)
+            continue
+        _awaiting_plug.pop(door.key, None)
         if door.key in _parked_closed:
             continue
         if door_control.in_cooldown(door.key, now):
@@ -296,6 +342,7 @@ def doors_to_close_after_parking(
         if not door_control.is_open(door, door_states, now):
             continue
         _parked_closed.add(door.key)
+        _plug_alerted.discard(door.key)
         out.append(door.key)
     return out
 
@@ -373,6 +420,17 @@ def _tick() -> None:
                  config.GARAGE_DOORS_BY_KEY[door_key].label)
         models.upsert_door_state(door_key, False)
         changed = True
+
+    for door_key in doors_waiting_for_plug(now):
+        door = config.GARAGE_DOORS_BY_KEY[door_key]
+        mins = int(config.PLUGGED_IN_ALERT_S / 60)
+        log.info("%s held open: %s is parked but not plugged in", door.label, door.owner_key)
+        notify.send(
+            title=f"{door.label} is still open",
+            message=(f"{door.label} has been open {mins} min waiting for the car "
+                     "to be plugged in. Plug it in and it will close, or close "
+                     "it from the app."),
+            tags="warning")
 
     if changed:
         door_states = {d["door_key"]: d for d in models.all_door_states()}

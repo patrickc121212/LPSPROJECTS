@@ -240,6 +240,7 @@ def flush() -> None:
             seatbelt=r.get("seatbelt"),
             gear=r.get("gear"),
             position_at=r.get("position_at"),
+            charge_state=r.get("charge_state"),
         )
     _update_trips(rows)
     _update_charging(rows)

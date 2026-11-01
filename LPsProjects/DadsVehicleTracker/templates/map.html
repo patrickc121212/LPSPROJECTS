@@ -8,8 +8,11 @@
 {% block content %}
 <div id="map"></div>
 
+<button id="follow-banner" class="follow-banner" hidden>Resume following</button>
+
 <aside class="hud">
   <h2>Vehicles</h2>
+  <p class="hint">Tap a vehicle to lock the map to it.</p>
   <ul id="vehicle-list" class="vehicle-list">
     {% for v in vehicles %}
       <li data-key="{{ v.key }}" style="--c: {{ v.color }}">

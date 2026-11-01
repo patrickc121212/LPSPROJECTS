@@ -78,6 +78,8 @@ def fresh_db(tmp_path, monkeypatch):
     geofence_worker._still_ref.clear()
     geofence_worker._parked_closed.clear()
     geofence_worker._depart_opened.clear()
+    geofence_worker._awaiting_plug.clear()
+    geofence_worker._plug_alerted.clear()
     geofence_worker._departing.clear()
     import trips as _trips
     _trips._last_point.clear()

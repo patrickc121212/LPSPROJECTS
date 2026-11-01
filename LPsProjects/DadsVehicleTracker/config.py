@@ -187,6 +187,26 @@ PARKED_RADIUS_M = float(os.getenv("PARKED_RADIUS_M", "25"))
 # Location after moving 10 m (telemetry minimum_delta), so anything reported
 # already exceeds this.
 PARKED_JITTER_M = float(os.getenv("PARKED_JITTER_M", "8"))
+# Wait for the car to be plugged in before closing after parking. Pulling in
+# and plugging in is one errand, and the door staying up until the cable is
+# connected means it is never travelling while someone is walking round the
+# car. The cost is that a car parked and NOT plugged in holds its door open
+# indefinitely, so PLUGGED_IN_ALERT_S below makes that state audible rather
+# than silent. Only the parked-close rule is affected: driving out of the
+# geofence still closes the door, plugged in or not.
+REQUIRE_PLUGGED_IN_TO_CLOSE = os.getenv("REQUIRE_PLUGGED_IN_TO_CLOSE", "1") == "1"
+# Push a notification once a car has sat parked and unplugged this long with
+# its door still open. 0 disables the reminder (the door still waits).
+PLUGGED_IN_ALERT_S = int(os.getenv("PLUGGED_IN_ALERT_S", "600"))
+# Charge states that mean the cable is physically connected. An allowlist,
+# not "anything but Disconnected": an unrecognised or missing value must read
+# as "we do not know", and not knowing must never close a door. Every door
+# incident so far came from acting on state we had inferred rather than read.
+PLUGGED_IN_STATES = frozenset(
+    s.strip() for s in os.getenv(
+        "PLUGGED_IN_STATES",
+        "Charging,Starting,Complete,Stopped,NoPower").split(",") if s.strip())
+
 # After opening a door because its owner buckled up, ignore the parked rule
 # for this long or until they actually drive away, whichever comes first.
 DEPART_GRACE_S = int(os.getenv("DEPART_GRACE_S", "600"))

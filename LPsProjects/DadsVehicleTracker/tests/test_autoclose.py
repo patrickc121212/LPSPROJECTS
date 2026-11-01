@@ -37,9 +37,15 @@ def _advance(monkeypatch, seconds):
     monkeypatch.setattr(gw.time, "time", lambda: frozen)
 
 
-def _parked_at(door, offset_m=3, belt="Unlatched", gear="P"):
-    """A snapshot of a car sitting at the garage, as the car reports it."""
-    return {"dad": {**at(door, offset_m), "seatbelt": belt, "gear": gear}}
+def _parked_at(door, offset_m=3, belt="Unlatched", gear="P", charge="Charging"):
+    """A snapshot of a car sitting at the garage, as the car reports it.
+
+    Plugged in by default: the parked-close rule now requires it, so this is
+    the ordinary end-of-journey state. Pass charge=None for a car that has
+    parked without plugging in.
+    """
+    return {"dad": {**at(door, offset_m), "seatbelt": belt, "gear": gear,
+                    "charge_state": charge}}
 
 
 def _open_state(door, now, age=0.0):
@@ -832,3 +838,179 @@ def test_the_confirmation_threshold_is_configurable(monkeypatch):
     parked = {"gear": "P", "speed_mph": 0}
     assert gw._has_driven_off(parked, 25.0) is False
     assert gw._has_driven_off(parked, 35.0) is True
+
+
+# --- waiting for the charge cable -------------------------------------------
+#
+# Pulling in and plugging in is one errand. Holding the door until the cable
+# is connected means it is never travelling while someone is walking round
+# the car — the manoeuvring case that stopped a door mid-close once already.
+
+def _settle(door, st, now, charge=None, offset_m=3):
+    """Park the car and let the dwell clock run out, so the only thing left
+    standing between it and a closed door is the charge cable."""
+    state = _parked_at(door, offset_m, charge=charge)
+    gw.doors_to_close_after_parking(state, st, now)
+    return state
+
+
+def test_parked_but_unplugged_holds_the_door_open(parked_close):
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    unplugged = _settle(d, st, now)
+    assert gw.doors_to_close_after_parking(unplugged, st, now + 31) == []
+    # Still waiting an hour later: the cable, not the clock, releases it.
+    assert gw.doors_to_close_after_parking(unplugged, st, now + 3600) == []
+
+
+def test_plugging_in_releases_the_held_door(parked_close):
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    _settle(d, st, now)
+    assert gw.doors_to_close_after_parking(_parked_at(d, charge=None), st, now + 31) == []
+    # Cable goes in; the dwell is already satisfied, so it closes at once.
+    assert gw.doors_to_close_after_parking(_parked_at(d, charge="Charging"),
+                                           st, now + 32) == [d.key]
+
+
+def test_disconnected_is_not_plugged_in(parked_close):
+    """The car says Disconnected explicitly; that is a cable that is out."""
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    _settle(d, st, now, charge="Disconnected")
+    state = _parked_at(d, charge="Disconnected")
+    assert gw.doors_to_close_after_parking(state, st, now + 31) == []
+
+
+@pytest.mark.parametrize("charge_state", ["Charging", "Starting", "Complete",
+                                          "Stopped", "NoPower"])
+def test_every_cable_connected_state_counts_as_plugged_in(parked_close, charge_state):
+    """A full battery reports Complete, a finished charge Stopped, a dead
+    outlet NoPower. All of them mean the cable is in, so all of them must
+    let the door close — otherwise arriving with a full battery would hold
+    the door open all night.
+    """
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    _settle(d, st, now, charge=charge_state)
+    assert gw.doors_to_close_after_parking(
+        _parked_at(d, charge=charge_state), st, now + 31) == [d.key]
+
+
+@pytest.mark.parametrize("charge_state", [None, "", "Unknown", "Nonsense",
+                                           "DetailedChargeStateWeird"])
+def test_unknown_charge_state_never_closes_a_door(parked_close, charge_state):
+    """Not knowing must never be the thing that moves a door.
+
+    This is the allowlist earning its keep: a denylist of "anything but
+    Disconnected" would read a garbled or absent value as plugged in and
+    close the door on a guess.
+    """
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    _settle(d, st, now, charge=charge_state)
+    assert gw.doors_to_close_after_parking(
+        _parked_at(d, charge=charge_state), st, now + 31) == []
+
+
+def test_the_gate_can_be_turned_off(parked_close, monkeypatch):
+    monkeypatch.setattr(gw.config, "REQUIRE_PLUGGED_IN_TO_CLOSE", False)
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    _settle(d, st, now)
+    assert gw.doors_to_close_after_parking(
+        _parked_at(d, charge=None), st, now + 31) == [d.key]
+
+
+def test_driving_away_still_closes_an_unplugged_car(auto_close):
+    """The plug gate covers only the parked rule. Leaving must still close
+    the door, or forgetting to plug in would leave the garage open all day
+    — which is the failure the plug gate could otherwise introduce.
+    """
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    gone = {"dad": {**at(d, 500), "gear": "D", "speed_mph": 30,
+                    "charge_state": "Disconnected"}}
+    assert gw.departure_actions(gone, st, now)[0] == []
+    assert gw.departure_actions(gone, st, now + 181)[0] == [d.key]
+
+
+# --- the reminder -----------------------------------------------------------
+
+def test_reminder_fires_once_after_the_wait(parked_close, monkeypatch):
+    monkeypatch.setattr(gw.config, "PLUGGED_IN_ALERT_S", 600)
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    unplugged = _settle(d, st, now)
+    gw.doors_to_close_after_parking(unplugged, st, now + 31)
+    assert gw.doors_waiting_for_plug(now + 100) == []
+    assert gw.doors_waiting_for_plug(now + 700) == [d.key]
+    assert gw.doors_waiting_for_plug(now + 1300) == [], "must not nag"
+
+
+def test_reminder_rearms_for_the_next_journey(parked_close, monkeypatch):
+    monkeypatch.setattr(gw.config, "PLUGGED_IN_ALERT_S", 600)
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    _settle(d, st, now)
+    gw.doors_to_close_after_parking(_parked_at(d, charge=None), st, now + 31)
+    assert gw.doors_waiting_for_plug(now + 700) == [d.key]
+    # They drive off; the held door is no longer a thing to nag about.
+    gw.doors_to_close_after_parking(
+        {"dad": {**at(d, 500), "gear": "D", "speed_mph": 30}}, st, now + 800)
+    assert gw._awaiting_plug == {}
+    # Next time home, unplugged again: it may nag once more.
+    gw.doors_to_close_after_parking(_parked_at(d, charge=None), st, now + 900)
+    gw.doors_to_close_after_parking(_parked_at(d, charge=None), st, now + 940)
+    gw.doors_to_close_after_parking(_parked_at(d, charge=None), st, now + 980)
+    assert gw.doors_waiting_for_plug(now + 1600) == [d.key]
+
+
+def test_plugging_in_cancels_a_pending_reminder(parked_close, monkeypatch):
+    monkeypatch.setattr(gw.config, "PLUGGED_IN_ALERT_S", 600)
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    _settle(d, st, now)
+    gw.doors_to_close_after_parking(_parked_at(d, charge=None), st, now + 31)
+    gw.doors_to_close_after_parking(_parked_at(d, charge="Charging"), st, now + 40)
+    assert gw.doors_waiting_for_plug(now + 700) == []
+
+
+def test_reminder_can_be_disabled(parked_close, monkeypatch):
+    monkeypatch.setattr(gw.config, "PLUGGED_IN_ALERT_S", 0)
+    d = owned_by("dad")
+    now = 1_000_000.0
+    st = _open_state(d, now)
+    _settle(d, st, now)
+    gw.doors_to_close_after_parking(_parked_at(d, charge=None), st, now + 31)
+    assert gw.doors_waiting_for_plug(now + 100_000) == []
+
+
+def test_plug_state_survives_a_round_trip_through_sqlite():
+    """The geofence reads state from SQLite, not from the MQTT message, so
+    an unpersisted charge_state would silently mean "never plugged in".
+    """
+    models.upsert_vehicle_state("dad", 1.0, 2.0, 0, 80, True,
+                                gear="P", charge_state="Charging")
+    row = {r["vehicle_key"]: r for r in models.all_vehicle_states()}["dad"]
+    assert row["charge_state"] == "Charging"
+    assert gw._plugged_in(row) is True
+
+
+def test_a_source_that_does_not_report_charge_state_does_not_wipe_it():
+    """The poller reports no charge state; it must not erase what telemetry
+    knows, or a poller tick would hold the door open."""
+    models.upsert_vehicle_state("dad", 1.0, 2.0, 0, 80, True, charge_state="Charging")
+    models.upsert_vehicle_state("dad", 1.0, 2.0, 0, 80, True)
+    row = {r["vehicle_key"]: r for r in models.all_vehicle_states()}["dad"]
+    assert row["charge_state"] == "Charging"

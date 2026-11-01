@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS vehicle_state (
     online         INTEGER,
     updated_at     REAL,
     seatbelt       TEXT,           -- "Latched" / "Unlatched" / NULL if unknown
+    charge_state   TEXT,           -- DetailedChargeState, prefix stripped; gates the
+                                   -- parked-close rule, so NULL must never read as plugged in
     gear           TEXT,           -- "P" / "R" / "N" / "D" / NULL if unknown
     position_at    REAL            -- when the POSITION last changed, which is
                                    -- not when we last heard anything at all
@@ -163,6 +165,7 @@ _MIGRATIONS = [
     ("vehicle_state", "gear", "ALTER TABLE vehicle_state ADD COLUMN gear TEXT"),
     ("charge_session", "kwh_dc", "ALTER TABLE charge_session ADD COLUMN kwh_dc REAL"),
     ("vehicle_state", "position_at", "ALTER TABLE vehicle_state ADD COLUMN position_at REAL"),
+    ("vehicle_state", "charge_state", "ALTER TABLE vehicle_state ADD COLUMN charge_state TEXT"),
 ]
 
 
@@ -199,14 +202,15 @@ def upsert_vehicle_state(
     seatbelt: str | None = None,
     gear: str | None = None,
     position_at: float | None = None,
+    charge_state: str | None = None,
 ) -> None:
     """seatbelt=None leaves any previously stored value alone, so a source
     that doesn't report it (the poller) can't wipe what telemetry knows."""
     with db() as conn:
         conn.execute(
             """
-            INSERT INTO vehicle_state(vehicle_key, latitude, longitude, speed_mph, battery_pct, online, updated_at, seatbelt, gear, position_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO vehicle_state(vehicle_key, latitude, longitude, speed_mph, battery_pct, online, updated_at, seatbelt, gear, position_at, charge_state)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(vehicle_key) DO UPDATE SET
                 latitude=excluded.latitude,
                 longitude=excluded.longitude,
@@ -216,10 +220,11 @@ def upsert_vehicle_state(
                 updated_at=excluded.updated_at,
                 seatbelt=COALESCE(excluded.seatbelt, vehicle_state.seatbelt),
                 gear=COALESCE(excluded.gear, vehicle_state.gear),
-                position_at=COALESCE(excluded.position_at, vehicle_state.position_at)
+                position_at=COALESCE(excluded.position_at, vehicle_state.position_at),
+                charge_state=COALESCE(excluded.charge_state, vehicle_state.charge_state)
             """,
             (vehicle_key, latitude, longitude, speed_mph, battery_pct, int(online), time.time(),
-             seatbelt, gear, position_at),
+             seatbelt, gear, position_at, charge_state),
         )
 
 
@@ -227,7 +232,7 @@ def all_vehicle_states() -> list[dict]:
     with db() as conn:
         rows = conn.execute(
             "SELECT vehicle_key, latitude, longitude, speed_mph, battery_pct, online, updated_at, "
-            "seatbelt, gear, position_at FROM vehicle_state"
+            "seatbelt, gear, position_at, charge_state FROM vehicle_state"
         ).fetchall()
     return [dict(r) for r in rows]
 
