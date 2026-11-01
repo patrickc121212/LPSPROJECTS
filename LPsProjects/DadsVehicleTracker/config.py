@@ -207,6 +207,17 @@ PLUGGED_IN_STATES = frozenset(
         "PLUGGED_IN_STATES",
         "Charging,Starting,Complete,Stopped,NoPower").split(",") if s.strip())
 
+# Plugging the car back in closes its door, even if it never left. If you
+# buckle up, the door opens, and you then change your mind and plug back in,
+# the departure grace below would otherwise hold the door open for its full
+# duration. Connecting the cable is an unambiguous "finished" signal, so it
+# cancels the departure and closes.
+#
+# Edge-triggered on the moment the cable goes in, never on the mere fact of
+# being plugged in -- otherwise opening the door from the app to fetch
+# something, with the car sitting plugged in, would close it on you.
+PLUG_IN_CLOSES_ENABLED = os.getenv("PLUG_IN_CLOSES_ENABLED", "1") == "1"
+
 # After opening a door because its owner buckled up, ignore the parked rule
 # for this long or until they actually drive away, whichever comes first.
 DEPART_GRACE_S = int(os.getenv("DEPART_GRACE_S", "600"))

@@ -58,6 +58,11 @@ _auto_closed: set[str] = set()
 _still_ref: dict[str, tuple[float, float, float]] = {}
 # Doors closed because the owner parked; cleared when the car moves again.
 _parked_closed: set[str] = set()
+# vehicle_key -> was it plugged in last tick. None (absent) means we have
+# no baseline yet, which must never count as an edge: on startup the car is
+# usually already plugged in, and reading that as "just plugged in" would
+# close the door the moment the app restarts.
+_plugged_prev: dict[str, bool] = {}
 # door_key -> when it first sat parked-but-unplugged, for the reminder push.
 _awaiting_plug: dict[str, float] = {}
 # door_keys we have already nagged about, so the reminder fires once.
@@ -248,6 +253,71 @@ def doors_to_open_for_departure(
     return out
 
 
+def doors_to_close_on_plug_in(
+    states: dict[str, dict[str, Any]],
+    door_states: dict[str, dict],
+    now: float,
+) -> list[str]:
+    """Doors to close because their owner has just plugged the car back in.
+
+    Connecting the cable says "finished" with no ambiguity, so this overrides
+    the departure grace: buckle up, change your mind, plug back in, and the
+    door shuts instead of standing open for the full grace period. It needs
+    no dwell either -- a car being plugged in is a car that has stopped.
+
+    Strictly the transition into plugged, never the state of being plugged.
+    Otherwise opening the door from the app to fetch something, while the car
+    sits on the charger, would close it again immediately.
+    """
+    # Detect the edge once per vehicle, before looking at doors, so two doors
+    # owned by one car cannot consume each other's transition.
+    just_plugged: set[str] = set()
+    for v in config.VEHICLES:
+        st = states.get(v.key)
+        if not st:
+            continue
+        plugged = _plugged_in(st)
+        was = _plugged_prev.get(v.key)
+        _plugged_prev[v.key] = plugged
+        if plugged and was is False:
+            just_plugged.add(v.key)
+
+    out: list[str] = []
+    for door in config.GARAGE_DOORS:
+        if door.owner_key not in just_plugged:
+            continue
+        s = states.get(door.owner_key)
+        if not s or s.get("latitude") is None or s.get("longitude") is None:
+            continue
+        if _buckled(s):
+            # Plugged in but still belted: contradictory, and the departure
+            # rule may be about to open this door. Leave it alone.
+            continue
+        if not _parked(s):
+            # Gear must say P. A car that is plugged in while not in park is
+            # something we do not understand, and we do not move doors on
+            # things we do not understand.
+            continue
+        if haversine_m(s["latitude"], s["longitude"],
+                       door.latitude, door.longitude) > config.PARKED_RADIUS_M:
+            continue
+        if door_control.in_cooldown(door.key, now):
+            continue
+        if not door_control.is_open(door, door_states, now):
+            continue
+        # The departure is over; cancel its grace and the unplugged reminder.
+        _departing.pop(door.key, None)
+        _depart_opened.discard(door.key)
+        _awaiting_plug.pop(door.key, None)
+        _plug_alerted.discard(door.key)
+        # Mark it closed for the parked rule too, so that rule cannot fire a
+        # second pulse -- two pulses seconds apart is what stops a door
+        # halfway, and it has happened here before.
+        _parked_closed.add(door.key)
+        out.append(door.key)
+    return out
+
+
 def doors_waiting_for_plug(now: float) -> list[str]:
     """Doors held open only because the car is not plugged in yet, and which
     have been waiting long enough to be worth mentioning. Returns each door
@@ -396,6 +466,13 @@ def _tick() -> None:
     changed = False
 
     to_close, to_assume = departure_actions(states, door_states, now)
+    plugged_in_closes: set[str] = set()
+    if config.PLUG_IN_CLOSES_ENABLED:
+        # Before the parked rule, so plugging in wins the reason in the log.
+        plugged_in_closes = set(doors_to_close_on_plug_in(states, door_states, now))
+        for key in plugged_in_closes:
+            if key not in to_close:
+                to_close.append(key)
     if config.PARKED_CLOSE_ENABLED:
         for key in doors_to_close_after_parking(states, door_states, now):
             if key not in to_close:
@@ -404,7 +481,12 @@ def _tick() -> None:
     for door_key in to_close:
         door = config.GARAGE_DOORS_BY_KEY[door_key]
         how = "sensor" if door_control.has_sensor(door) else "inferred state"
-        why = "owner parked at the garage" if door_key in _parked_closed else "owner away"
+        if door_key in plugged_in_closes:
+            why = "owner plugged the car back in"
+        elif door_key in _parked_closed:
+            why = "owner parked at the garage"
+        else:
+            why = "owner away"
         log.info("Auto-closing %s: %s and door open per %s", door.label, why, how)
         new_state = door_control.state_after_pulse(door, "close", door_states, now)
         result = door_control.actuate(door, "close")
