@@ -101,6 +101,39 @@ def _buckle(v: Any) -> str | None:
     return text or None  # Unknown / Faulted: stored, but never counts as latched
 
 
+def _occupied(v: Any) -> bool | None:
+    """Normalise driver presence to True / False / None.
+
+    Declared a boolean, but DriverSeatBelt was declared an enum and arrived
+    as a JSON boolean, so assume nothing about the encoding. Anything we do
+    not recognise becomes None -- "we do not know" -- never False, because
+    "nobody is in the car" is the answer that would justify moving a door.
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    low = str(v).replace("DriverSeatOccupied", "").strip().lower()
+    if low in ("true", "1", "occupied", "present", "yes"):
+        return True
+    if low in ("false", "0", "unoccupied", "empty", "notpresent", "no"):
+        return False
+    return None
+
+
+def _display_awake(v: Any) -> bool | None:
+    """Is the centre screen awake? A screen does not wake by itself, so this
+    corroborates presence when nobody is sat in the driver's seat."""
+    if v is None:
+        return None
+    low = str(v).replace("DisplayState", "").strip().lower()
+    if low in ("off", "sleep", "sleeping", "dark"):
+        return False
+    if low in ("", "unknown"):
+        return None
+    return True        # On, Driving, Charging, Sentry, Dialog, ...
+
+
 def _location(v: Any) -> tuple[float | None, float | None]:
     if isinstance(v, dict):
         inner = v.get("locationValue", v)
@@ -138,6 +171,10 @@ def apply_signal(vehicle_key: str, field: str, value: Any,
                 row["speed_mph"] = 0.0
         elif field == "DetailedChargeState":
             row["charge_state"] = str(value).replace("DetailedChargeState", "") if value is not None else None
+        elif field == "DriverSeatOccupied":
+            row["occupied"] = _occupied(value)
+        elif field == "CenterDisplay":
+            row["display_on"] = _display_awake(value)
         elif field == "Odometer":
             row["odometer"] = _num(value)
         elif field == "ACChargingEnergyIn":
@@ -241,6 +278,8 @@ def flush() -> None:
             gear=r.get("gear"),
             position_at=r.get("position_at"),
             charge_state=r.get("charge_state"),
+            occupied=r.get("occupied"),
+            display_on=r.get("display_on"),
         )
     _update_trips(rows)
     _update_charging(rows)

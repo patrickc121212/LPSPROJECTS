@@ -16,9 +16,12 @@
   <ul id="vehicle-list" class="vehicle-list">
     {% for v in vehicles %}
       <li data-key="{{ v.key }}" style="--c: {{ v.color }}">
-        <span class="dot"></span>
-        <span class="label">{{ v.label }}</span>
-        <span class="meta" id="meta-{{ v.key }}">—</span>
+        <div class="v-row">
+          <span class="dot"></span>
+          <span class="label">{{ v.label }}</span>
+          <span class="meta" id="meta-{{ v.key }}">—</span>
+        </div>
+        <span class="presence" id="presence-{{ v.key }}" title="">—</span>
       </li>
     {% endfor %}
   </ul>

@@ -129,6 +129,15 @@
         meta.textContent = `${online} ${pct} · ${mph}`;
       }
 
+      // Is anyone in it. The verdict is computed server-side (occupancy.py)
+      // so this list, the SSE stream and /api/vehicles cannot disagree.
+      const pres = document.getElementById('presence-' + k);
+      if (pres && row.presence) {
+        pres.textContent = row.presence.label;
+        pres.title = row.presence.detail || '';
+        pres.className = 'presence is-' + (row.presence.state || 'unknown');
+      }
+
       if (row.latitude != null && row.longitude != null) {
         markers[k].setLatLng([row.latitude, row.longitude]);
       }

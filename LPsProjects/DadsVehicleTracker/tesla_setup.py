@@ -340,6 +340,17 @@ def telemetry_fields() -> dict:
         # Buckling up is our "about to drive off" cue, so report it promptly.
         # It only transmits on change, so the cost is a couple of events a day.
         "DriverSeatBelt":      {"interval_seconds": 1},
+        # Is anyone in the car. Tesla describes this as "driver presence,
+        # determined by combination of sources depending on platform", so it
+        # is the driver's seat only and its accuracy varies by model -- it
+        # needs checking per car rather than trusting across the fleet.
+        # PassengerSeatBelt is deliberately NOT subscribed: Tesla's own docs
+        # say it "improperly reports if the 2nd row center seat belt is
+        # buckled", so it cannot answer anything about the front passenger.
+        "DriverSeatOccupied":  {"interval_seconds": 1},
+        # Corroboration, and a hint someone is in there without being sat in
+        # the driver's seat: the screen does not wake by itself.
+        "CenterDisplay":       {"interval_seconds": 10},
         # Exact trip distance, better than summing GPS hops.
         "Odometer":            {"interval_seconds": 60},
         "VehicleName":         {"interval_seconds": 3600},

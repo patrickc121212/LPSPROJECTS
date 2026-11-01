@@ -29,6 +29,10 @@ CREATE TABLE IF NOT EXISTS vehicle_state (
     online         INTEGER,
     updated_at     REAL,
     seatbelt       TEXT,           -- "Latched" / "Unlatched" / NULL if unknown
+    occupied       INTEGER,       -- DriverSeatOccupied: 1/0, NULL = unknown.
+                                   -- Driver's seat only, and NULL must never
+                                   -- read as "nobody in the car"
+    display_on     INTEGER,       -- centre screen awake: corroborates presence
     charge_state   TEXT,           -- DetailedChargeState, prefix stripped; gates the
                                    -- parked-close rule, so NULL must never read as plugged in
     gear           TEXT,           -- "P" / "R" / "N" / "D" / NULL if unknown
@@ -166,6 +170,8 @@ _MIGRATIONS = [
     ("charge_session", "kwh_dc", "ALTER TABLE charge_session ADD COLUMN kwh_dc REAL"),
     ("vehicle_state", "position_at", "ALTER TABLE vehicle_state ADD COLUMN position_at REAL"),
     ("vehicle_state", "charge_state", "ALTER TABLE vehicle_state ADD COLUMN charge_state TEXT"),
+    ("vehicle_state", "occupied", "ALTER TABLE vehicle_state ADD COLUMN occupied INTEGER"),
+    ("vehicle_state", "display_on", "ALTER TABLE vehicle_state ADD COLUMN display_on INTEGER"),
 ]
 
 
@@ -203,14 +209,16 @@ def upsert_vehicle_state(
     gear: str | None = None,
     position_at: float | None = None,
     charge_state: str | None = None,
+    occupied: bool | None = None,
+    display_on: bool | None = None,
 ) -> None:
     """seatbelt=None leaves any previously stored value alone, so a source
     that doesn't report it (the poller) can't wipe what telemetry knows."""
     with db() as conn:
         conn.execute(
             """
-            INSERT INTO vehicle_state(vehicle_key, latitude, longitude, speed_mph, battery_pct, online, updated_at, seatbelt, gear, position_at, charge_state)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO vehicle_state(vehicle_key, latitude, longitude, speed_mph, battery_pct, online, updated_at, seatbelt, gear, position_at, charge_state, occupied, display_on)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(vehicle_key) DO UPDATE SET
                 latitude=excluded.latitude,
                 longitude=excluded.longitude,
@@ -221,10 +229,14 @@ def upsert_vehicle_state(
                 seatbelt=COALESCE(excluded.seatbelt, vehicle_state.seatbelt),
                 gear=COALESCE(excluded.gear, vehicle_state.gear),
                 position_at=COALESCE(excluded.position_at, vehicle_state.position_at),
-                charge_state=COALESCE(excluded.charge_state, vehicle_state.charge_state)
+                charge_state=COALESCE(excluded.charge_state, vehicle_state.charge_state),
+                occupied=COALESCE(excluded.occupied, vehicle_state.occupied),
+                display_on=COALESCE(excluded.display_on, vehicle_state.display_on)
             """,
             (vehicle_key, latitude, longitude, speed_mph, battery_pct, int(online), time.time(),
-             seatbelt, gear, position_at, charge_state),
+             seatbelt, gear, position_at, charge_state,
+             None if occupied is None else int(occupied),
+             None if display_on is None else int(display_on)),
         )
 
 
@@ -232,9 +244,18 @@ def all_vehicle_states() -> list[dict]:
     with db() as conn:
         rows = conn.execute(
             "SELECT vehicle_key, latitude, longitude, speed_mph, battery_pct, online, updated_at, "
-            "seatbelt, gear, position_at, charge_state FROM vehicle_state"
+            "seatbelt, gear, position_at, charge_state, occupied, display_on "
+            "FROM vehicle_state"
         ).fetchall()
-    return [dict(r) for r in rows]
+    # Derive the presence verdict here so the map, the SSE stream and
+    # /api/vehicles cannot drift apart by each computing it themselves.
+    import occupancy
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["presence"] = occupancy.summarise(d)
+        out.append(d)
+    return out
 
 
 # --- Door state ------------------------------------------------------------
