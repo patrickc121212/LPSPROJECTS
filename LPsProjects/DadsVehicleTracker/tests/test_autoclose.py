@@ -734,14 +734,23 @@ def test_a_failed_pulse_records_nothing(auth, monkeypatch):
 
 # --- a departure must not be cut short by the parked rule -------------------
 
-def test_parked_rule_is_held_off_after_a_departure_open(depart_open, parked_close):
+def test_parked_rule_is_held_off_after_a_departure_open(depart_open, parked_close,
+                                                       monkeypatch):
     """The 2026-09-28 fault: buckled at 04:37 so the door opened, and the
-    parked rule shut it at 04:39 while the driver was still on the drive."""
+    parked rule shut it at 04:39 while the driver was still on the drive.
+
+    Unplugged, because you unplug to leave -- and a connected cable now
+    cancels the grace deliberately. The plug requirement is off so that the
+    grace is the only thing under test here, rather than passing because
+    something else also held the door.
+    """
+    monkeypatch.setattr(config, "REQUIRE_PLUGGED_IN_TO_CLOSE", False)
     d = owned_by("dad")
     now = 1_000_000.0
-    gw.doors_to_open_for_departure(_parked_at(d, belt="Latched"), _shut(d, now), now)
+    gw.doors_to_open_for_departure(
+        _parked_at(d, belt="Latched", charge="Disconnected"), _shut(d, now), now)
     open_now = _open_state(d, now)
-    unbuckled = _parked_at(d, belt="Unlatched")
+    unbuckled = _parked_at(d, belt="Unlatched", charge="Disconnected")
     for t in (30, 60, 120, 200, 400):
         assert gw.doors_to_close_after_parking(unbuckled, open_now, now + t) == [], \
             f"closed {t}s into a departure"
@@ -762,11 +771,15 @@ def test_grace_expires_so_a_stalled_departure_still_closes(depart_open, parked_c
     """If they buckle up and then change their mind entirely, the door
     should not stay open for ever."""
     monkeypatch.setattr(config, "DEPART_GRACE_S", 300)
+    # Unplugged, so the grace genuinely applies; a connected cable cancels
+    # it on purpose, which test_plug_close.py covers.
+    monkeypatch.setattr(config, "REQUIRE_PLUGGED_IN_TO_CLOSE", False)
     d = owned_by("dad")
     now = 1_000_000.0
-    gw.doors_to_open_for_departure(_parked_at(d, belt="Latched"), _shut(d, now), now)
+    gw.doors_to_open_for_departure(
+        _parked_at(d, belt="Latched", charge="Disconnected"), _shut(d, now), now)
     open_now = _open_state(d, now)
-    unbuckled = _parked_at(d, belt="Unlatched")
+    unbuckled = _parked_at(d, belt="Unlatched", charge="Disconnected")
     assert gw.doors_to_close_after_parking(unbuckled, open_now, now + 100) == []
     gw.doors_to_close_after_parking(unbuckled, open_now, now + 301)
     assert gw.doors_to_close_after_parking(unbuckled, open_now, now + 400) == [d.key]

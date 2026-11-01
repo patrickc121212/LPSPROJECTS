@@ -371,10 +371,19 @@ def doors_to_close_after_parking(
             # rule and shut the door on them.
             continue
         started = _departing.get(door.key)
-        if started is not None and (now - started) < config.DEPART_GRACE_S:
+        if (started is not None and (now - started) < config.DEPART_GRACE_S
+                and not _plugged_in(s)):
             # We opened this door because they buckled up. Unbuckling for a
             # moment - to fetch something, or a flicker in the signal - must
             # not be read as "finished for the day".
+            #
+            # Unless the cable is connected. Then they cannot drive off at
+            # all, so the grace is protecting a departure that is not going
+            # to happen, and the door would stand open for its full ten
+            # minutes with the car parked in the garage. This catches the
+            # case the plug-in edge cannot: buckling up without unplugging
+            # first, then changing your mind, where the cable never moved
+            # and so never produced a transition.
             continue
         if not _parked(s):
             # Still in D or R, or the gear is unknown: the driver is not

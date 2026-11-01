@@ -211,6 +211,20 @@ def config_warnings() -> list[str]:
                 f"AUTO_CLOSE_DELAY_S ({config.AUTO_CLOSE_DELAY_S}s) >= DOOR_OPEN_TTL_S "
                 f"({DOOR_OPEN_TTL_S}s): without a sensor the door's 'open' belief "
                 "expires before the close fires, so auto-close would never run")
+    if (config.DEPART_OPEN_ENABLED and config.PARKED_CLOSE_ENABLED
+            and DOOR_OPEN_TTL_S):
+        # The parked rule may only close between the grace ending and the
+        # open belief expiring. Observed 2026-11-01 with both set to 600 s:
+        # that window was zero seconds wide, so Garage 2 opened on a buckle
+        # at 09:37:54 and nothing could ever close it again.
+        need = config.DEPART_GRACE_S + config.PARKED_DWELL_S
+        if need >= DOOR_OPEN_TTL_S:
+            out.append(
+                f"DEPART_GRACE_S ({config.DEPART_GRACE_S}s) + PARKED_DWELL_S "
+                f"({config.PARKED_DWELL_S}s) >= DOOR_OPEN_TTL_S ({DOOR_OPEN_TTL_S}s): "
+                "after a buckle-to-open the door's 'open' belief expires before "
+                "the grace ends, so the parked rule can NEVER close it. Raise "
+                "DOOR_OPEN_TTL_S or lower DEPART_GRACE_S.")
     if config.PARKED_CLOSE_ENABLED:
         overlap = [d.label for d in config.GARAGE_DOORS
                    if config.PARKED_RADIUS_M > config.close_radius(d)]
