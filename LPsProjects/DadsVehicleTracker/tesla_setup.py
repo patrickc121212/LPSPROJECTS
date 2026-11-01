@@ -323,7 +323,14 @@ def telemetry_fields() -> dict:
         "VehicleSpeed":        {"interval_seconds": 10},
         "Gear":                {"interval_seconds": 10},
         "BatteryLevel":        {"interval_seconds": 60},
-        "DetailedChargeState": {"interval_seconds": 60},
+        # Plugging in closes the garage door, so this is a control input and
+        # not just a log entry: at 60 s the door waited up to a minute after
+        # the cable went in. interval_seconds is a rate cap, not a poll rate,
+        # and this field only transmits on change -- measured at ~11
+        # transitions a day across three cars, or $0.002/month. The latency
+        # was costing far more than the signals. Same reasoning as
+        # DriverSeatBelt below.
+        "DetailedChargeState": {"interval_seconds": 1},
         # Charging log. These only transmit while current is flowing.
         "ACChargingEnergyIn":  {"interval_seconds": 60},
         "ACChargingPower":     {"interval_seconds": 60},
