@@ -40,6 +40,9 @@ WAN_CHECK_INTERVAL_S = int(os.getenv("HEALTH_WAN_INTERVAL_S", "900"))
 # still published. Shelling out to tailscale is cheap but not free.
 PUBLIC_HOST = os.getenv("PUBLIC_HOST", "tracker.taild11993.ts.net")
 PUBLIC_CHECK_INTERVAL_S = int(os.getenv("HEALTH_PUBLIC_INTERVAL_S", "900"))
+# How many consecutive NXDOMAIN readings count as real, when Tailscale itself
+# reports the Funnel is up. At the interval above, 2 means ~15 minutes.
+DNS_FAILS_BEFORE_ALERT = int(os.getenv("HEALTH_DNS_FAILS", "2"))
 TAILSCALE_EXE = os.getenv(
     "TAILSCALE_EXE", r"C:\Program Files\Tailscale\tailscale.exe")
 
@@ -70,6 +73,10 @@ class _WanCache:
 class _PublicCache:
     at: float = 0.0
     value: "tuple[bool, str] | None" = None   # (reachable, detail)
+    # Consecutive NXDOMAIN readings while Tailscale says all is well. DNS
+    # negative caching outlives a Funnel being restored, so one reading
+    # proves nothing.
+    dns_fails: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -264,14 +271,8 @@ def public_url_published(now: float, force: bool = False) -> tuple[bool, str]:
 
     reasons: list[str] = []
 
-    # 1. Resolution, from outside this network.
-    resolved = _resolves_publicly(PUBLIC_HOST)
-    if resolved is False:
-        reasons.append(f"{PUBLIC_HOST} does not resolve (NXDOMAIN) from a "
-                       "public DNS resolver")
-    # resolved is None => we could not ask. Not evidence of breakage.
-
-    # 2. Tailscale's own view: logged in, online, and serving a Funnel.
+    # 1. Tailscale's own view: logged in, online, and serving a Funnel. Local
+    #    and authoritative, with no propagation delay, so it alerts at once.
     state, funnel = _tailscale_state()
     if state is not None and state != "Running":
         reasons.append(f"Tailscale backend state is {state!r}, not Running — "
@@ -280,6 +281,26 @@ def public_url_published(now: float, force: bool = False) -> tuple[bool, str]:
     if funnel is False:
         reasons.append("Tailscale has no Funnel configured, so nothing is "
                        "published even while the node is up")
+
+    # 2. Resolution, from outside this network. Corroboration only, and it
+    #    must persist before it counts.
+    #
+    #    Measured on 2026-11-08: after the Funnel was restored and the site
+    #    was verifiably loading from outside, both public resolvers were
+    #    still returning NXDOMAIN from their negative cache. Alerting on a
+    #    single such reading would mean a CRITICAL push every time the
+    #    Funnel is re-established -- and a monitor that cries wolf during
+    #    normal propagation is one you learn to ignore.
+    resolved = _resolves_publicly(PUBLIC_HOST)   # None => could not ask
+    if resolved is False:
+        _public.dns_fails += 1
+        if _public.dns_fails >= DNS_FAILS_BEFORE_ALERT and not reasons:
+            reasons.append(
+                f"{PUBLIC_HOST} has not resolved (NXDOMAIN) from a public DNS "
+                f"resolver on {_public.dns_fails} consecutive checks, while "
+                "Tailscale believes it is published")
+    elif resolved is True:
+        _public.dns_fails = 0
 
     value = (not reasons, "; ".join(reasons))
     with _public.lock:
@@ -347,10 +368,15 @@ def check_public_url(now: float) -> Issue | None:
         return None
     return Issue("public_url", SEV_CRITICAL,
                  "The site is not reachable from outside",
-                 f"{detail}. It still works on the local network. Fix with "
-                 f"`tailscale up`, then re-publish: `tailscale serve --bg "
-                 f"--https=443 http://127.0.0.1:5000` and `tailscale funnel "
-                 f"--bg 443 on`.")
+                 f"{detail}. It still works on the local network. Most likely "
+                 "the tailscale-ipn.exe tray client is not running: it holds "
+                 "the signed-in profile, it is a user-session process like "
+                 "Docker Desktop, and it has no autostart entry, so anything "
+                 "that ends the session takes it down. Start it, then if the "
+                 "node still will not come up run `tailscale up "
+                 "--hostname=tracker` (the hostname MUST be given or the "
+                 "public URL changes), and re-publish with `tailscale funnel "
+                 "--bg 5000`.")
 
 
 def check_tesla_credentials(now: float) -> Issue | None:

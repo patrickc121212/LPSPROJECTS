@@ -39,12 +39,37 @@ def test_all_well_is_silent(monkeypatch):
     assert health.check_public_url(time.time()) is None
 
 
-def test_nxdomain_is_critical(monkeypatch):
-    """How the 2026-11-08 outage actually presented."""
+def test_one_nxdomain_reading_is_tolerated(monkeypatch):
+    """Measured on 2026-11-08: after the Funnel was restored and the site was
+    verifiably loading from outside, both public resolvers still served a
+    cached NXDOMAIN. Alerting on one reading would push a CRITICAL every
+    time the Funnel is re-established.
+    """
     _fake(monkeypatch, False, "Running", True)
-    i = health.check_public_url(time.time())
+    assert health.check_public_url(time.time()) is None
+
+
+def test_persistent_nxdomain_is_critical(monkeypatch):
+    """Tolerated once, not forever. At the 900 s cache these are 15 minutes
+    apart, far longer than propagation needs."""
+    _fake(monkeypatch, False, "Running", True)
+    for _ in range(health.DNS_FAILS_BEFORE_ALERT):
+        i = health.check_public_url(time.time())
+        health._public.at = 0.0          # next sweep, cache expired
     assert i and i.severity == health.SEV_CRITICAL
     assert "NXDOMAIN" in i.detail
+
+
+def test_dns_recovering_resets_the_counter(monkeypatch):
+    _fake(monkeypatch, False, "Running", True)
+    health.check_public_url(time.time())
+    health._public.at = 0.0
+    _fake(monkeypatch, True, "Running", True)
+    health.check_public_url(time.time())
+    health._public.at = 0.0
+    assert health._public.dns_fails == 0
+    _fake(monkeypatch, False, "Running", True)
+    assert health.check_public_url(time.time()) is None, "counter restarted"
 
 
 def test_a_logged_out_node_is_critical(monkeypatch):
@@ -61,14 +86,35 @@ def test_a_missing_funnel_is_critical(monkeypatch):
     assert i and "no Funnel" in i.detail
 
 
-def test_the_real_outage_reports_every_cause(monkeypatch):
-    """Exactly what the live system returned on 2026-11-08."""
+def test_the_real_outage_alerts_immediately_on_the_tailscale_signals(monkeypatch):
+    """What the live system returned on 2026-11-08. Tailscale's own state is
+    local and authoritative with no propagation delay, so it must alert on
+    the first reading rather than waiting out the DNS counter."""
     _fake(monkeypatch, False, "NoState", False)
     i = health.check_public_url(time.time())
-    assert i
-    for fragment in ("NXDOMAIN", "logged out", "no Funnel"):
-        assert fragment in i.detail
-    assert "tailscale up" in i.detail, "must say how to fix it"
+    assert i and i.severity == health.SEV_CRITICAL
+    assert "logged out" in i.detail and "no Funnel" in i.detail
+
+
+def test_a_known_cause_is_not_padded_with_the_dns_reading(monkeypatch):
+    """When Tailscale says it is down, that IS the cause. Adding "and DNS
+    does not resolve either" is noise -- of course it does not."""
+    _fake(monkeypatch, False, "NoState", False)
+    i = health.check_public_url(time.time())
+    assert "NXDOMAIN" not in i.detail
+
+
+def test_the_alert_says_how_to_fix_it_with_the_current_cli(monkeypatch):
+    """The first draft of this alert carried `tailscale funnel --bg 443 on`,
+    which the 1.102 CLI rejects outright -- advice that wastes the reader's
+    time at the moment they are least able to afford it.
+    """
+    _fake(monkeypatch, None, "NoState", False)
+    detail = health.check_public_url(time.time()).detail
+    assert "tailscale funnel --bg 5000" in detail
+    assert "--hostname=tracker" in detail, "omitting it changes the public URL"
+    assert "tailscale-ipn.exe" in detail, "the actual root cause on 2026-11-08"
+    assert "443 on" not in detail, "that is the old syntax and it fails"
 
 
 # --- what must NOT raise an alarm ------------------------------------------
