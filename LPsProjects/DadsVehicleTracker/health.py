@@ -13,9 +13,11 @@ nothing for hours quite legitimately, so silence alone is not a fault.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import socket
+import subprocess
 import threading
 import time
 import urllib.request
@@ -34,6 +36,12 @@ NO_DATA_HOURS = float(os.getenv("HEALTH_NO_DATA_HOURS", "18"))
 CERT_WARN_DAYS = int(os.getenv("HEALTH_CERT_WARN_DAYS", "14"))
 # Comparing our WAN address against DNS needs an outbound call; do it rarely.
 WAN_CHECK_INTERVAL_S = int(os.getenv("HEALTH_WAN_INTERVAL_S", "900"))
+# The public hostname the family actually uses, and how often to verify it is
+# still published. Shelling out to tailscale is cheap but not free.
+PUBLIC_HOST = os.getenv("PUBLIC_HOST", "tracker.taild11993.ts.net")
+PUBLIC_CHECK_INTERVAL_S = int(os.getenv("HEALTH_PUBLIC_INTERVAL_S", "900"))
+TAILSCALE_EXE = os.getenv(
+    "TAILSCALE_EXE", r"C:\Program Files\Tailscale\tailscale.exe")
 
 SEV_CRITICAL = "critical"
 SEV_WARNING = "warning"
@@ -58,7 +66,15 @@ class _WanCache:
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
+@dataclass
+class _PublicCache:
+    at: float = 0.0
+    value: "tuple[bool, str] | None" = None   # (reachable, detail)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
 _wan = _WanCache()
+_public = _PublicCache()
 _previous: set[str] = set()
 # True when a recovery message is owed but could not be delivered.
 _recovery_owed = False
@@ -218,6 +234,125 @@ def check_wan(now: float) -> Issue | None:
                  "Update the DNS record, and check the router's 443 forward.")
 
 
+def public_url_published(now: float, force: bool = False) -> tuple[bool, str]:
+    """Is the public URL actually published? Returns (ok, detail).
+
+    This is the one failure the rest of the monitoring is blind to. Every
+    other check runs inside the app and asks about things the app can see;
+    the watchdog asks 127.0.0.1. All of them were reporting healthy on
+    2026-11-08 while tracker.taild11993.ts.net did not resolve at all and
+    the family could not reach the site from a phone or a car.
+
+    Two independent questions, because either alone gives false comfort:
+
+      1. Does the hostname resolve, according to a resolver outside this
+         house? NXDOMAIN is how the outage presented, and a public resolver
+         saying so is genuinely external evidence.
+      2. Does Tailscale still hold a Funnel for us? The node had been
+         logged out, which silently discards the serve config, and DNS can
+         lag behind that by minutes.
+
+    What it deliberately does NOT do is fetch the public URL from this
+    machine and call a 200 success. On the node itself that request can be
+    answered locally without ever crossing the internet -- measured at 50 ms
+    on 2026-11-01 -- so a self-fetch would have passed happily throughout
+    the outage. A check that cannot fail is worse than no check.
+    """
+    with _public.lock:
+        if not force and _public.value and now - _public.at < PUBLIC_CHECK_INTERVAL_S:
+            return _public.value
+
+    reasons: list[str] = []
+
+    # 1. Resolution, from outside this network.
+    resolved = _resolves_publicly(PUBLIC_HOST)
+    if resolved is False:
+        reasons.append(f"{PUBLIC_HOST} does not resolve (NXDOMAIN) from a "
+                       "public DNS resolver")
+    # resolved is None => we could not ask. Not evidence of breakage.
+
+    # 2. Tailscale's own view: logged in, online, and serving a Funnel.
+    state, funnel = _tailscale_state()
+    if state is not None and state != "Running":
+        reasons.append(f"Tailscale backend state is {state!r}, not Running — "
+                       "the node is logged out, so its DNS record and Funnel "
+                       "are withdrawn")
+    if funnel is False:
+        reasons.append("Tailscale has no Funnel configured, so nothing is "
+                       "published even while the node is up")
+
+    value = (not reasons, "; ".join(reasons))
+    with _public.lock:
+        _public.at, _public.value = now, value
+    return value
+
+
+def _resolves_publicly(host: str) -> bool | None:
+    """True / False / None if we could not get an answer at all.
+
+    Uses DNS-over-HTTPS so the answer comes from outside this network
+    rather than from a local cache or the router, which is the whole point.
+    """
+    for url in ("https://cloudflare-dns.com/dns-query?name=%s&type=A",
+                "https://dns.google/resolve?name=%s&type=A"):
+        try:
+            req = urllib.request.Request(
+                url % host, headers={"Accept": "application/dns-json"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode())
+            status = data.get("Status")
+            if status == 3:            # NXDOMAIN
+                return False
+            if status == 0:
+                # NOERROR with no A record is still nothing to connect to.
+                return any(a.get("type") == 1 for a in data.get("Answer") or [])
+        except Exception:  # noqa: BLE001 — try the next resolver
+            continue
+    return None
+
+
+def _tailscale_state() -> tuple[str | None, bool | None]:
+    """(BackendState, funnel_configured). None for anything we cannot read,
+    so a missing CLI never manufactures an alert."""
+    state: str | None = None
+    funnel: bool | None = None
+    if not os.path.exists(TAILSCALE_EXE):
+        return state, funnel
+    no_window = 0x08000000 if os.name == "nt" else 0
+    try:
+        r = subprocess.run([TAILSCALE_EXE, "status", "--json"],
+                           capture_output=True, text=True, timeout=15,
+                           creationflags=no_window)
+        if r.returncode == 0 and r.stdout.strip():
+            state = (json.loads(r.stdout) or {}).get("BackendState")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        r = subprocess.run([TAILSCALE_EXE, "serve", "status"],
+                           capture_output=True, text=True, timeout=15,
+                           creationflags=no_window)
+        if r.returncode == 0:
+            funnel = "funnel on" in r.stdout.lower()
+    except Exception:  # noqa: BLE001
+        pass
+    return state, funnel
+
+
+def check_public_url(now: float) -> Issue | None:
+    """The family reaches this from phones and from the cars' browsers, so
+    an unreachable public URL is the app being down as far as they are
+    concerned, however healthy it looks from inside the house."""
+    ok, detail = public_url_published(now)
+    if ok:
+        return None
+    return Issue("public_url", SEV_CRITICAL,
+                 "The site is not reachable from outside",
+                 f"{detail}. It still works on the local network. Fix with "
+                 f"`tailscale up`, then re-publish: `tailscale serve --bg "
+                 f"--https=443 http://127.0.0.1:5000` and `tailscale funnel "
+                 f"--bg 443 on`.")
+
+
 def check_tesla_credentials(now: float) -> Issue | None:
     """Can we still talk to Tesla's API?
 
@@ -285,6 +420,7 @@ def check(now: float | None = None) -> list[Issue]:
     for fn in (lambda: [check_mqtt()], check_doors,
                lambda: [check_vehicle_data(now)], lambda: [check_wan(now)],
                lambda: [check_certificate(now)],
+               lambda: [check_public_url(now)],
                lambda: [check_tesla_credentials(now)]):
         try:
             issues.extend(i for i in fn() if i)
